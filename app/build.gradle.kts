@@ -23,6 +23,9 @@ android {
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     val defaultCoolifyUrl = (System.getenv("COOLIFY_BACKEND_URL") ?: "").trim().trimEnd('/')
     buildConfigField("String", "DEFAULT_COOLIFY_BACKEND_URL", "\"$defaultCoolifyUrl\"")
+    ndk {
+      abiFilters += listOf("arm64-v8a", "x86_64")
+    }
   }
 
   signingConfigs {
