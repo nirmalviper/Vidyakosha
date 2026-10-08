@@ -20,51 +20,93 @@ permissions:
 jobs:
   publish-apk-release:
     runs-on: ubuntu-latest
-    if: "!contains(github.event.head_commit.message, '[skip ci]')"
+    if: github.event_name == 'workflow_dispatch' || !contains(github.event.head_commit.message, '[skip ci]')
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Assemble or Verify Signed APK in releases/
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Configure Android SDK & Accept Licenses
+        run: |
+          export ANDROID_HOME="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          export ANDROID_SDK_ROOT="${ANDROID_HOME}"
+          mkdir -p "${ANDROID_HOME}/licenses"
+          printf "\n8933bad161af4178b1185d1a37fbf41ea5269c55\nd56f5187479451eabf01fb78af6dfcb131a6481e\n24333f8a63b6825ea9c5514f83c2829b004d1fee" > "${ANDROID_HOME}/licenses/android-sdk-license"
+          printf "\n84831b9409646a918e30573bab4c9c91346d8abd\n504667f4c0de7af1a06de9f4b1727b84351f2910" > "${ANDROID_HOME}/licenses/android-sdk-preview-license"
+          printf "\n601085b94cd77f0b54ff86406957099ebe79c4d6" > "${ANDROID_HOME}/licenses/android-googletv-license"
+          printf "\nceff83576aac4f7f37cb98fe189e9fb3c49d3b81" > "${ANDROID_HOME}/licenses/android-googlexr-license"
+          yes | sdkmanager --licenses > /dev/null 2>&1 || true
+          sdkmanager "platforms;android-36.1" "platforms;android-36" "build-tools;36.0.0" || true
+
+      - name: Setup Gradle 9.3.1
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '9.3.1'
+          validate-wrappers: false
+
+      - name: Build Signed APK & Place in Root and releases/
         run: |
           mkdir -p releases
-          if [ -s "releases/lipi-v1.0.0.apk" ]; then
-            echo "Found pre-built signed APK at releases/lipi-v1.0.0.apk"
-          elif ls releases/apk-parts/part_* >/dev/null 2>&1; then
-            echo "Reconstructing signed APK from base64 parts in releases/apk-parts/..."
-            cat releases/apk-parts/part_* | base64 -d > releases/lipi-v1.0.0.apk
+          if ! command -v gradle >/dev/null 2>&1; then
+            curl -fsSL https://services.gradle.org/distributions/gradle-9.3.1-bin.zip -o /tmp/gradle-9.3.1-bin.zip
+            unzip -q /tmp/gradle-9.3.1-bin.zip -d /tmp/gradle-dist
+            export PATH="/tmp/gradle-dist/gradle-9.3.1/bin:$PATH"
+          fi
+          if [ ! -f ".env" ]; then
+            if [ -f ".env.example" ]; then
+              cp .env.example .env
+            else
+              touch .env
+            fi
+          fi
+          if [ ! -s "debug.keystore" ] && [ -f "debug.keystore.base64" ]; then
+            tr -d '\r\n ' < debug.keystore.base64 | base64 -d > debug.keystore || true
+          fi
+          if [ ! -s "debug.keystore" ]; then
+            keytool -genkeypair -v -keystore debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
+          fi
+          echo "Building signed Android APK with Gradle..."
+          if gradle :app:assembleDebug -PapkAbi=arm64-v8a --no-daemon --stacktrace; then
+            cp app/build/outputs/apk/debug/app-debug.apk lipi.apk
+            cp app/build/outputs/apk/debug/app-debug.apk releases/lipi-v1.0.0.apk
+          elif [ -s "lipi.apk" ]; then
+            cp lipi.apk releases/lipi-v1.0.0.apk
+          elif [ -s "releases/lipi-v1.0.0.apk" ]; then
+            cp releases/lipi-v1.0.0.apk lipi.apk
           else
-            echo "No APK or APK parts found in releases/"
+            echo "Gradle APK build failed and no pre-built APK found."
             exit 1
           fi
-          cp releases/lipi-v1.0.0.apk releases/lipi-latest.apk
-          sha256sum releases/lipi-v1.0.0.apk releases/lipi-latest.apk > releases/SHA256SUMS.txt
-          ls -lh releases/
-
-      - name: Commit Reconstructed APK into releases/ Folder in Repository
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add -f releases/lipi-v1.0.0.apk releases/lipi-latest.apk releases/SHA256SUMS.txt
-          if ! git diff --staged --quiet; then
-            git commit -m "chore(release): publish lipi-v1.0.0.apk in releases folder [skip ci]"
-            git push || true
+          sha256sum lipi.apk releases/lipi-v1.0.0.apk > releases/SHA256SUMS.txt
+          if [ ! -f "releases/release-notes-v1.0.0.md" ]; then
+            printf "# Lipi v1.0.0 Release\n\nSigned Android APK build.\n" > releases/release-notes-v1.0.0.md
           fi
+          ls -lh lipi.apk releases/
 
       - name: Upload APK to GitHub Actions Artifacts
         uses: actions/upload-artifact@v4
         with:
           name: lipi-android-apk
           path: |
+            lipi.apk
             releases/lipi-v1.0.0.apk
-            releases/lipi-latest.apk
             releases/SHA256SUMS.txt
             releases/release-notes-v1.0.0.md
 
       - name: Publish to GitHub Releases Tab (v1.0.0)
         uses: softprops/action-gh-release@v2
+        continue-on-error: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
@@ -72,9 +114,23 @@ jobs:
           name: "Lipi Knowledge Commons ${{ inputs.release_tag || 'v1.0.0' }} (Android APK)"
           body_path: releases/release-notes-v1.0.0.md
           files: |
+            lipi.apk
             releases/lipi-v1.0.0.apk
-            releases/lipi-latest.apk
             releases/SHA256SUMS.txt
           draft: false
           prerelease: false
           make_latest: true
+
+      - name: Commit APK to Root and releases/ Folder in Repository
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -f lipi.apk releases/lipi-v1.0.0.apk releases/SHA256SUMS.txt
+          if ! git diff --staged --quiet; then
+            git commit -m "chore(release): add built lipi.apk in root and releases folder [skip ci]"
+            if [ "${GITHUB_REF_TYPE:-branch}" = "branch" ] && [ -n "${GITHUB_REF_NAME:-}" ]; then
+              git push origin "HEAD:refs/heads/${GITHUB_REF_NAME}" || true
+            else
+              git push || true
+            fi
+          fi

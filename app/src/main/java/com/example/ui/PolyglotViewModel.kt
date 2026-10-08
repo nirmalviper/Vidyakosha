@@ -1175,6 +1175,21 @@ class PolyglotViewModel(application: Application) : AndroidViewModel(application
         _currentVisibleParagraphId.value = null
 
         val userId = _currentUser.value?.id ?: 0L
+
+        // Automatically detect and repair any legacy font encoding / mojibake / corrupted OCR in previously uploaded books
+        runCatching {
+            val repairedRes = repository.repairBookEncodingAndReOcrIfNeeded(
+                userId = userId,
+                bookId = bookId,
+                forceReOcr = false
+            )
+            val repairedCount = repairedRes.getOrDefault(0)
+            if (repairedCount > 0) {
+                _continuousScrollNotice.value =
+                    "✓ Repaired $repairedCount passage(s) from legacy PDF font encoding / OCR into clean Unicode script."
+            }
+        }
+
         val savedProgress = if (userId > 0L) {
             repository.getUserReadingProgressForBook(userId, bookId)
         } else null
@@ -1206,6 +1221,41 @@ class PolyglotViewModel(application: Application) : AndroidViewModel(application
                     triggerAutoTranslationOrReuseForSection(bookId, secId, _selectedLanguage.value.name)
                 }
             }
+        }
+    }
+
+    /**
+     * Manually triggers full Legacy Encoding Repair & Visual Re-OCR for the active book,
+     * followed by refreshing the active section's translation.
+     */
+    fun repairActiveBookEncodingAndOcr() {
+        val book = uiState.value.activeBook ?: return
+        val userId = _currentUser.value?.id ?: 0L
+        viewModelScope.launch {
+            _isTranslatingSection.value = true
+            _errorBannerMessage.value = null
+            _continuousScrollNotice.value =
+                "Repairing legacy font encoding & re-running visual OCR for '${book.title}'…"
+            val res = repository.repairBookEncodingAndReOcrIfNeeded(
+                userId = userId,
+                bookId = book.id,
+                forceReOcr = true,
+                onProgress = { msg -> _continuousScrollNotice.value = msg }
+            )
+            _isTranslatingSection.value = false
+            res.fold(
+                onSuccess = { count ->
+                    _continuousScrollNotice.value = if (count > 0) {
+                        "✓ Repaired & re-OCRed $count passage(s) into clean Unicode script."
+                    } else {
+                        "✓ Verified source text Unicode encoding (${book.originalLanguage}). Refreshing section translation…"
+                    }
+                    translateCurrentSection(forceRetranslate = true)
+                },
+                onFailure = { err ->
+                    _errorBannerMessage.value = err.message ?: "Unable to repair book encoding."
+                }
+            )
         }
     }
 

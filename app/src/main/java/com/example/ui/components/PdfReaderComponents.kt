@@ -114,6 +114,7 @@ import com.example.ui.PendingContributorAction
 import com.example.ui.ReaderDisplayMode
 import com.example.ui.theme.AppThemeMode
 import com.example.ui.theme.LoraSerif
+import com.example.ui.theme.resolveScriptAwareFontFamily
 import com.example.ui.theme.ReaderCanvasNight
 import com.example.ui.theme.ReaderCanvasPaper
 import com.example.ui.theme.ReaderCanvasSepia
@@ -179,7 +180,8 @@ fun BilingualBookReaderPane(
     userTopLanguages: List<LanguageDescriptor> = LanguageRegistry.parseTopThreeLanguages(null),
     onOpenLanguageSettings: () -> Unit = {},
     appThemeMode: AppThemeMode = AppThemeMode.WHITE,
-    onSelectAppThemeMode: (AppThemeMode) -> Unit = {}
+    onSelectAppThemeMode: (AppThemeMode) -> Unit = {},
+    onRepairBookEncodingAndOcr: () -> Unit = {}
 ) {
     val listState = rememberLazyListState()
     var focusChromeVisible by rememberSaveable { mutableStateOf(false) }
@@ -740,7 +742,7 @@ fun BilingualBookReaderPane(
                                 )
                                 Text(
                                     text = block.section.heading,
-                                    fontFamily = LoraSerif,
+                                    fontFamily = resolveScriptAwareFontFamily(block.section.heading),
                                     fontWeight = FontWeight.SemiBold,
                                     fontSize = (if (blockIdx == 0) (24f * fontScaleMultiplier) else (20f * fontScaleMultiplier)).sp,
                                     lineHeight = (if (blockIdx == 0) (32f * fontScaleMultiplier) else (28f * fontScaleMultiplier)).sp,
@@ -1183,6 +1185,21 @@ fun BilingualBookReaderPane(
                         Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
                         Spacer(modifier = Modifier.width(6.dp))
                         Text("Retranslate Section (Local NMT or Optional AI)")
+                    }
+
+                    OutlinedButton(
+                        onClick = {
+                            onRepairBookEncodingAndOcr()
+                            showAppearanceDialog = false
+                        },
+                        enabled = !isTranslatingSection,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("repair_book_encoding_ocr_button")
+                    ) {
+                        Icon(Icons.Default.AutoAwesome, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Repair Encoding & Visual Re-OCR Book")
                     }
                 }
             },
@@ -1873,7 +1890,7 @@ private fun LiteraryPassageBlock(
             ) {
                 Text(
                     text = p.originalText,
-                    fontFamily = LoraSerif,
+                    fontFamily = resolveScriptAwareFontFamily(p.originalText),
                     fontSize = proseFontSize,
                     lineHeight = proseLineHeight,
                     color = canvasText,
@@ -1884,7 +1901,7 @@ private fun LiteraryPassageBlock(
                     if (trans != null) {
                         Text(
                             text = trans.translatedText,
-                            fontFamily = LoraSerif,
+                            fontFamily = resolveScriptAwareFontFamily(trans.translatedText),
                             fontSize = proseFontSize,
                             lineHeight = proseLineHeight,
                             color = canvasText.copy(alpha = 0.92f)
@@ -1903,7 +1920,7 @@ private fun LiteraryPassageBlock(
                 ReaderDisplayMode.ORIGINAL_ONLY -> {
                     Text(
                         text = p.originalText,
-                        fontFamily = LoraSerif,
+                        fontFamily = resolveScriptAwareFontFamily(p.originalText),
                         fontSize = proseFontSize,
                         lineHeight = proseLineHeight,
                         color = canvasText
@@ -1913,7 +1930,7 @@ private fun LiteraryPassageBlock(
                     if (trans != null) {
                         Text(
                             text = trans.translatedText,
-                            fontFamily = LoraSerif,
+                            fontFamily = resolveScriptAwareFontFamily(trans.translatedText),
                             fontSize = proseFontSize,
                             lineHeight = proseLineHeight,
                             color = canvasText
@@ -1930,7 +1947,7 @@ private fun LiteraryPassageBlock(
                     // Clean stacked bilingual flow with distinct editorial accent bar for translation
                     Text(
                         text = p.originalText,
-                        fontFamily = LoraSerif,
+                        fontFamily = resolveScriptAwareFontFamily(p.originalText),
                         fontSize = proseFontSize,
                         lineHeight = proseLineHeight,
                         color = canvasText
@@ -1962,7 +1979,7 @@ private fun LiteraryPassageBlock(
                             ) {
                                 Text(
                                     text = trans.translatedText,
-                                    fontFamily = LoraSerif,
+                                    fontFamily = resolveScriptAwareFontFamily(trans.translatedText),
                                     fontSize = (17f * fontScaleMultiplier).sp,
                                     lineHeight = (28f * fontScaleMultiplier).sp,
                                     color = canvasText.copy(alpha = 0.90f)

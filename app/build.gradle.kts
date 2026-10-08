@@ -24,7 +24,12 @@ android {
     val defaultCoolifyUrl = (System.getenv("COOLIFY_BACKEND_URL") ?: "").trim().trimEnd('/')
     buildConfigField("String", "DEFAULT_COOLIFY_BACKEND_URL", "\"$defaultCoolifyUrl\"")
     ndk {
-      abiFilters += listOf("arm64-v8a", "x86_64")
+      val requestedAbi = (project.findProperty("apkAbi") as? String)?.trim()
+      if (!requestedAbi.isNullOrEmpty()) {
+        abiFilters += listOf(requestedAbi)
+      } else {
+        abiFilters += listOf("arm64-v8a", "x86_64")
+      }
     }
   }
 
@@ -66,6 +71,17 @@ android {
     jniLibs {
       useLegacyPackaging = true
     }
+    resources {
+      excludes += setOf(
+        "org/bouncycastle/**",
+        "META-INF/*.SF",
+        "META-INF/*.DSA",
+        "META-INF/*.RSA",
+        "META-INF/DEPENDENCIES",
+        "META-INF/LICENSE*",
+        "META-INF/NOTICE*"
+      )
+    }
   }
   dependenciesInfo {
     includeInApk = false
@@ -95,7 +111,9 @@ dependencies {
   // implementation(libs.androidx.camera.lifecycle)
   // implementation(libs.androidx.camera.view)
   implementation(libs.androidx.compose.material.icons.core)
-  implementation(libs.androidx.compose.material.icons.extended)
+  compileOnly(libs.androidx.compose.material.icons.extended)
+  testImplementation(libs.androidx.compose.material.icons.extended)
+  implementation(files("libs/material-icons-subset.jar"))
   implementation(libs.androidx.compose.material3)
   implementation(libs.androidx.compose.ui)
   implementation(libs.androidx.compose.ui.graphics)
@@ -133,11 +151,13 @@ dependencies {
   implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.8.0")
   implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.10.2")
   // Deterministic Native PDF Text Extraction (Apache PDFBox for Android)
-  implementation("com.tom-roush:pdfbox-android:2.0.27.0")
+  implementation("com.tom-roush:pdfbox-android:2.0.27.0") {
+    exclude(group = "org.bouncycastle")
+  }
   // Deterministic On-Device OCR & Non-AI Machine Translation (Google ML Kit)
-  implementation("com.google.mlkit:text-recognition:16.0.1")
-  implementation("com.google.mlkit:text-recognition-devanagari:16.0.1")
-  implementation("com.google.mlkit:language-id:17.0.6")
+  implementation("com.google.android.gms:play-services-mlkit-text-recognition:19.0.1")
+  implementation("com.google.android.gms:play-services-mlkit-text-recognition-devanagari:16.0.1")
+  implementation("com.google.android.gms:play-services-mlkit-language-id:17.0.0")
   implementation("com.google.mlkit:translate:17.0.3")
   testImplementation(libs.androidx.compose.ui.test.junit4)
   testImplementation(libs.androidx.core)

@@ -199,7 +199,7 @@ object LocalOcrAndTranslationEngine {
 
                     val pageResult = try {
                         // 1. Try extracting selectable native text via Apache PDFBox for this exact page
-                        val pdfBoxPageText = if (pdDocument != null && pdfStripper != null && pageNum <= pdDocument.numberOfPages) {
+                        val rawPdfBoxPageText = if (pdDocument != null && pdfStripper != null && pageNum <= pdDocument.numberOfPages) {
                             try {
                                 pdfStripper.startPage = pageNum
                                 pdfStripper.endPage = pageNum
@@ -211,59 +211,75 @@ object LocalOcrAndTranslationEngine {
                             ""
                         }
 
-                        // 2. If PDFBox returned empty or garbled CIDs, check low-level PDF stream text operators
-                        val streamFallbackText = if (!isMeaningfulSelectableText(pdfBoxPageText) && rawPdfBytes != null) {
-                            extractSelectableTextFromRawPdfStream(rawPdfBytes, pageIndex)
+                        // Recover UTF-8 mojibake first if PDFBox decoded UTF-8 bytes as Latin-1/Windows-1252
+                        val pdfBoxPageText = tryRecoverUtf8Mojibake(rawPdfBoxPageText)
+
+                        // 2. Check if PDFBox text is genuinely readable Unicode (and NOT legacy Kruti Dev / Shree-Lipi / Chanakya / broken CID font encoding)
+                        val isPdfBoxCleanUnicode = isMeaningfulSelectableText(pdfBoxPageText)
+
+                        // Only use low-level PDF stream fallback if it decodes to genuine readable Unicode (never raw glyph indices)
+                        val streamFallbackText = if (!isPdfBoxCleanUnicode && rawPdfBytes != null) {
+                            tryRecoverUtf8Mojibake(extractSelectableTextFromRawPdfStream(rawPdfBytes, pageIndex))
                         } else {
                             ""
                         }
 
                         val candidateNativeText = when {
-                            isMeaningfulSelectableText(pdfBoxPageText) -> pdfBoxPageText
-                            isMeaningfulSelectableText(streamFallbackText) -> streamFallbackText
+                            isPdfBoxCleanUnicode -> sanitizeUnicodeScriptBlock(pdfBoxPageText)
+                            isMeaningfulSelectableText(streamFallbackText) -> sanitizeUnicodeScriptBlock(streamFallbackText)
                             else -> ""
                         }
 
                         val hasNativeText = candidateNativeText.isNotBlank()
 
-                        // 3. Determine Raw Text: Either Native Selectable PDF Text OR On-Device OCR on Rendered Bitmap
+                        // 3. Determine Raw Text: Either Clean Native Unicode PDF Text OR Visual On-Device OCR on High-Res Rendered Bitmap
                         val rawText: String
                         val engineUsed: String
                         val confidence: Float
                         val confidenceNote: String
                         var savedImagePath = ""
 
-                        if (hasNativeText) {
-                            nativePagesCount++
-                            rawText = candidateNativeText
-                            engineUsed = if (pdfBoxPageText.isNotBlank()) "PDFBOX_NATIVE_TEXT" else "PDF_STREAM_PARSER"
-                            confidence = 0.99f
-                            confidenceNote = "Direct selectable PDF text extracted ($engineUsed • Page $pageNum/$totalPages)"
-                        } else {
-                            scannedOcrPagesCount++
-                            onProgress(
-                                "Running local on-device OCR on scanned page $pageNum of $totalPages…",
-                                pageNum,
-                                totalPages
+                        // Render page bitmap whenever native text is missing/legacy-encoded OR to keep a visual page snapshot for re-OCR
+                        val pageBitmap: Bitmap? = if (sharedRenderer != null) {
+                            PdfProcessor.renderPageWithOpenRenderer(
+                                sharedRenderer,
+                                pageIndex,
+                                maxDimension = if (hasNativeText) 1440 else 2048
                             )
+                        } else {
+                            PdfProcessor.renderPageToBitmap(
+                                pdfFile,
+                                pageIndex,
+                                maxDimension = if (hasNativeText) 1440 else 2048
+                            )
+                        }
 
-                            val pageBitmap: Bitmap? = if (sharedRenderer != null) {
-                                PdfProcessor.renderPageWithOpenRenderer(sharedRenderer, pageIndex, maxDimension = 1280)
-                            } else {
-                                PdfProcessor.renderPageToBitmap(pdfFile, pageIndex, maxDimension = 1280)
+                        try {
+                            if (pageBitmap != null) {
+                                val imgFile = File(pageRendersDir, "doc_${fingerprintPrefix.take(10)}_p${pageNum}.jpg")
+                                savedImagePath = runCatching {
+                                    FileOutputStream(imgFile).use { out ->
+                                        pageBitmap.compress(Bitmap.CompressFormat.JPEG, 82, out)
+                                    }
+                                    imgFile.absolutePath
+                                }.getOrDefault("")
                             }
 
-                            try {
-                                if (pageBitmap != null) {
-                                    // Save compact JPEG preview for scanned page
-                                    val imgFile = File(pageRendersDir, "doc_${fingerprintPrefix.take(10)}_p${pageNum}.jpg")
-                                    savedImagePath = runCatching {
-                                        FileOutputStream(imgFile).use { out ->
-                                            pageBitmap.compress(Bitmap.CompressFormat.JPEG, 72, out)
-                                        }
-                                        imgFile.absolutePath
-                                    }.getOrDefault("")
+                            if (hasNativeText) {
+                                nativePagesCount++
+                                rawText = candidateNativeText
+                                engineUsed = if (isPdfBoxCleanUnicode) "PDFBOX_NATIVE_UNICODE" else "PDF_STREAM_UNICODE"
+                                confidence = 0.99f
+                                confidenceNote = "Verified Unicode selectable PDF text ($engineUsed • Page $pageNum/$totalPages)"
+                            } else {
+                                scannedOcrPagesCount++
+                                onProgress(
+                                    "Running visual on-device OCR on page $pageNum of $totalPages (bypassing legacy/non-Unicode font stream)…",
+                                    pageNum,
+                                    totalPages
+                                )
 
+                                if (pageBitmap != null) {
                                     if (sharedDevanagariRecognizer == null) {
                                         sharedDevanagariRecognizer = runCatching {
                                             TextRecognition.getClient(DevanagariTextRecognizerOptions.Builder().build())
@@ -278,38 +294,65 @@ object LocalOcrAndTranslationEngine {
                                     val ocrOutcome = runOnDeviceMlKitOcrOnBitmap(
                                         bitmap = pageBitmap,
                                         devanagariRecognizer = sharedDevanagariRecognizer,
-                                        latinRecognizer = sharedLatinRecognizer
+                                        latinRecognizer = sharedLatinRecognizer,
+                                        hintTitleOrLang = fallbackTitle
                                     )
 
-                                    if (ocrOutcome.recognizedText.isNotBlank()) {
-                                        rawText = ocrOutcome.recognizedText
-                                        engineUsed = ocrOutcome.engineLabel
-                                        confidence = ocrOutcome.confidenceScore
-                                        confidenceNote = "On-device OCR (${ocrOutcome.engineLabel}) • Page $pageNum/$totalPages"
+                                    // Also check if legacy PDF text can be deterministically decoded from Kruti Dev / Chanakya into Unicode Devanagari
+                                    val repairedLegacyText = if (rawPdfBoxPageText.isNotBlank()) {
+                                        repairCorruptedOrLegacyEncodedText(rawPdfBoxPageText, fallbackTitle)
                                     } else {
-                                        val anyRawStrings = pdfBoxPageText.ifBlank { streamFallbackText }.trim()
-                                        rawText = anyRawStrings.ifBlank {
-                                            "[Page $pageNum of $totalPages: Scanned image/diagram page with no machine-readable text blocks detected by local OCR]"
+                                        ""
+                                    }
+                                    val hasCleanRepairedLegacy = repairedLegacyText.isNotBlank() &&
+                                        !isCorruptedOrLegacyEncodedText(repairedLegacyText) &&
+                                        repairedLegacyText != rawPdfBoxPageText.trim()
+
+                                    when {
+                                        ocrOutcome.recognizedText.isNotBlank() -> {
+                                            rawText = ocrOutcome.recognizedText
+                                            engineUsed = ocrOutcome.engineLabel
+                                            confidence = ocrOutcome.confidenceScore
+                                            confidenceNote = "Visual On-Device OCR (${ocrOutcome.engineLabel}) • Page $pageNum/$totalPages"
                                         }
-                                        engineUsed = "LOCAL_OCR_SCAN_EMPTY"
-                                        confidence = 0.50f
-                                        confidenceNote = "Image/diagram page or unindexed scan (Page $pageNum/$totalPages)"
+                                        hasCleanRepairedLegacy -> {
+                                            rawText = repairedLegacyText
+                                            engineUsed = "LEGACY_FONT_UNICODE_DECODER"
+                                            confidence = 0.88f
+                                            confidenceNote = "Decoded legacy non-Unicode PDF font into Unicode • Page $pageNum/$totalPages"
+                                        }
+                                        else -> {
+                                            // CRITICAL: Never dump raw corrupted/legacy PDF stream bytes into the reader!
+                                            rawText = "[Page $pageNum of $totalPages: Scanned or custom-font page queued for Vision OCR]"
+                                            engineUsed = "LOCAL_OCR_SCAN_EMPTY"
+                                            confidence = 0.50f
+                                            confidenceNote = "Scanned or non-Unicode font page awaiting Vision OCR (Page $pageNum/$totalPages)"
+                                        }
                                     }
                                 } else {
-                                    val anyRawStrings = pdfBoxPageText.ifBlank { streamFallbackText }.trim()
-                                    rawText = anyRawStrings.ifBlank {
-                                        "[Page $pageNum of $totalPages: Page image could not be rendered for local OCR]"
+                                    val repairedLegacyText = if (rawPdfBoxPageText.isNotBlank()) {
+                                        repairCorruptedOrLegacyEncodedText(rawPdfBoxPageText, fallbackTitle)
+                                    } else {
+                                        ""
                                     }
-                                    engineUsed = "LOCAL_OCR_SCAN_EMPTY"
-                                    confidence = 0.50f
-                                    confidenceNote = "Unrenderable scan page (Page $pageNum/$totalPages)"
+                                    if (repairedLegacyText.isNotBlank() && !isCorruptedOrLegacyEncodedText(repairedLegacyText)) {
+                                        rawText = repairedLegacyText
+                                        engineUsed = "LEGACY_FONT_UNICODE_DECODER"
+                                        confidence = 0.86f
+                                        confidenceNote = "Decoded legacy PDF font into Unicode (Page $pageNum/$totalPages)"
+                                    } else {
+                                        rawText = "[Page $pageNum of $totalPages: Page image could not be rendered for local OCR]"
+                                        engineUsed = "LOCAL_OCR_SCAN_EMPTY"
+                                        confidence = 0.50f
+                                        confidenceNote = "Unrenderable scan page (Page $pageNum/$totalPages)"
+                                    }
                                 }
-                            } finally {
-                                // CRITICAL: Always recycle bitmap immediately so heap never fills up on page 6+!
-                                runCatching {
-                                    if (pageBitmap != null && !pageBitmap.isRecycled) {
-                                        pageBitmap.recycle()
-                                    }
+                            }
+                        } finally {
+                            // CRITICAL: Always recycle bitmap immediately so heap never fills up on page 6+!
+                            runCatching {
+                                if (pageBitmap != null && !pageBitmap.isRecycled) {
+                                    pageBitmap.recycle()
                                 }
                             }
                         }
@@ -405,10 +448,11 @@ object LocalOcrAndTranslationEngine {
     }
 
     /**
-     * Checks whether extracted PDF text is genuine human-readable selectable text
-     * (and not empty or unmapped CID control-character noise).
+     * Checks whether extracted PDF text is genuine human-readable Unicode selectable text
+     * (and NOT empty, unmapped CID control-character noise, UTF-8 mojibake, or legacy non-Unicode
+     * Indic font encodings such as Kruti Dev, DevLys, Shree-Lipi, Chanakya, or Harikrishna).
      */
-    private fun isMeaningfulSelectableText(text: String): Boolean {
+    fun isMeaningfulSelectableText(text: String): Boolean {
         val trimmed = text.trim()
         if (trimmed.length < 8) return false
         val nonWhitespace = trimmed.count { !it.isWhitespace() }
@@ -421,7 +465,352 @@ object LocalOcrAndTranslationEngine {
             )
         }
         val ratio = readableLettersOrDigits.toFloat() / nonWhitespace.toFloat().coerceAtLeast(1f)
-        return ratio >= 0.45f
+        if (ratio < 0.55f) return false
+
+        // Reject legacy non-Unicode font encodings, broken CMaps, and OCR/mojibake noise
+        return !isCorruptedOrLegacyEncodedText(trimmed)
+    }
+
+    /**
+     * Comprehensive detector for:
+     * 1. Private Use Area (PUA), Replacement chars (\uFFFD), C0/C1 control chars, or unassigned Indic codepoints (e.g. 0x0AE4, 0x0AE5).
+     * 2. UTF-8 Mojibake (UTF-8 multi-byte sequences decoded as ISO-8859-1 / Windows-1252).
+     * 3. Legacy Indic Font Encodings mapped onto ASCII / Latin-1 (Kruti Dev, DevLys, Chanakya, Shree-Lipi, Walkman-Chanakya, Gopika, Harikrishna, Akruti).
+     * 4. Hallucinated Latin OCR noise produced when a Latin recognizer tries to read curved Indic/non-Latin scripts.
+     */
+    fun isCorruptedOrLegacyEncodedText(text: String): Boolean {
+        val trimmed = text.trim()
+        if (trimmed.isEmpty()) return true
+
+        // Skip internal placeholder brackets
+        if (trimmed.startsWith("[Page ") && trimmed.endsWith("]")) return false
+
+        val nonWhitespaceChars = trimmed.filter { !it.isWhitespace() }
+        if (nonWhitespaceChars.isEmpty()) return true
+        val totalNonWs = nonWhitespaceChars.length
+
+        // 1. Check for PUA, replacement character, control chars, or unassigned Gujarati dandas (0x0AE4, 0x0AE5)
+        val puaOrBrokenCount = nonWhitespaceChars.count { ch ->
+            val code = ch.code
+            code == 0xFFFD ||
+                code in 0xE000..0xF8FF ||
+                code in 0x0000..0x0008 ||
+                code in 0x000E..0x001F ||
+                code in 0x007F..0x009F ||
+                code == 0x0AE4 ||
+                code == 0x0AE5 ||
+                code == 0x0A84 ||
+                code == 0x0A8E ||
+                code == 0x0A92 ||
+                code == 0x0AA9 ||
+                code == 0x0AB1 ||
+                code == 0x0AB4 ||
+                code == 0x0AC6 ||
+                code == 0x0ACA
+        }
+        if (puaOrBrokenCount > 0 && (puaOrBrokenCount >= 2 || puaOrBrokenCount.toFloat() / totalNonWs >= 0.015f)) {
+            return true
+        }
+
+        // 2. Check for UTF-8 Mojibake patterns (e.g. à¤, à¥, àª, à«, Ã, Â, â€, ÃÖ)
+        if (Regex("(?:à[¤¥ª«¦§®¯°±²³´µ]|Ã[\\u0080-\\u00BF]|Â[\\u0080-\\u00BF]|ÃÖ|•Ö)").containsMatchIn(trimmed)) {
+            return true
+        }
+
+        // 3. Check if text already has clean native Indic/non-Latin Unicode characters
+        val nativeUnicodeScriptCount = nonWhitespaceChars.count { ch ->
+            ch.code in 0x0900..0x0D7F || // Devanagari, Bengali, Gurmukhi, Gujarati, Odia, Tamil, Telugu, Kannada, Malayalam
+                ch.code in 0x0600..0x06FF || // Arabic / Urdu
+                ch.code in 0x0400..0x04FF || // Cyrillic
+                ch.code in 0x3040..0x9FFF || // Japanese / CJK
+                ch.code in 0xAC00..0xD7AF    // Korean
+        }
+        if (nativeUnicodeScriptCount.toFloat() / totalNonWs >= 0.30f) {
+            // Genuine native Unicode script text (provided it didn't fail the unassigned/PUA check above)
+            return false
+        }
+
+        // 4. High density of Latin-1 Supplement / Extended characters (0x00A1..0x024F) used by Shree-Lipi, Chanakya, Kiran, Akruti
+        val latin1SupplementCount = nonWhitespaceChars.count { it.code in 0x00A1..0x024F }
+        if (latin1SupplementCount >= 3 && latin1SupplementCount.toFloat() / totalNonWs >= 0.06f) {
+            return true
+        }
+
+        // 5. Legacy ASCII Indic Font Encodings (Kruti Dev / DevLys / Chanakya / Harikrishna / Gopika)
+        // A. Mid-word punctuation/symbols injected inside letter sequences (e.g., v/;k;, d`f;k, Hkkjr, fl)kar, fo|k, d".k)
+        val midWordSymbolMatches = Regex("[A-Za-z][;:/\\\\^&*~`{}\\[\\]<>=+|@#$%]+[A-Za-z]|[;:/\\\\^&*~`{}\\[\\]<>=+|@#$%]{2,}").findAll(trimmed).count()
+        val words = trimmed.split(Regex("\\s+")).filter { it.isNotBlank() }
+        if (words.isNotEmpty() && (midWordSymbolMatches >= 2 || midWordSymbolMatches.toFloat() / words.size >= 0.08f)) {
+            return true
+        }
+
+        // B. Mixed-case internal capitals inside words (e.g., gS, eSa, sHk, dksbZ, izkIr, foKku, Jheku, ugha, rFkk)
+        val alphaWords = words.map { it.trim('.', ',', '!', '?', '"', '\'', '(', ')') }.filter { it.length >= 2 && it.any { c -> c in 'A'..'Z' || c in 'a'..'z' } }
+        if (alphaWords.size >= 3) {
+            val internalUpperWords = alphaWords.count { w ->
+                // Has a lowercase letter followed by an uppercase letter (e.g. gS, dksbZ, foKku, Hkkjr) or starts with 2 uppercase then lowercase (Hkkjr)
+                Regex("[a-z][A-Z]|[A-Z]{2}[a-z]").containsMatchIn(w)
+            }
+            if (internalUpperWords >= 2 && internalUpperWords.toFloat() / alphaWords.size >= 0.08f) {
+                return true
+            }
+        }
+
+        // C. Kruti Dev / DevLys signature words (whole-word match)
+        val krutiSignatureTokens = setOf(
+            "gS", "gSa", "dks", "esa", "ugha", "fd;k", "rFkk", "vksj", "v/;k;", "fo|k",
+            "Hkkjr", "izdkj", "thou", "vkRek", "IkjekRek", "fl)kar", "vo';", "d`i;k", "i`"
+        )
+        val signatureHits = words.count { w -> w.trim('.', ',', ';', ':') in krutiSignatureTokens }
+        if (signatureHits >= 2 || (words.size in 1..6 && signatureHits >= 1)) {
+            return true
+        }
+
+        // D. Abnormal vowel distribution or unpronounceable consonant clusters in ASCII text
+        val asciiLetters = nonWhitespaceChars.filter { it in 'A'..'Z' || it in 'a'..'z' }
+        if (asciiLetters.length >= 16) {
+            val vowels = asciiLetters.count { it.lowercaseChar() in "aeiouy" }
+            val vowelRatio = vowels.toFloat() / asciiLetters.length.toFloat()
+            if (vowelRatio < 0.21f || vowelRatio > 0.70f) {
+                return true
+            }
+            val consonantClusterCount = Regex("[bcdfghjklmnpqrstvwxzBCDFGHJKLMNPQRSTVWXZ]{5,}").findAll(trimmed).count()
+            if (consonantClusterCount >= 2) {
+                return true
+            }
+            val vowelLessWords = alphaWords.count { w -> w.length >= 3 && w.none { c -> c.lowercaseChar() in "aeiouy" } }
+            if (vowelLessWords >= 2 && vowelLessWords.toFloat() / alphaWords.size.coerceAtLeast(1) >= 0.14f) {
+                return true
+            }
+        }
+
+        // E. Hallucinated OCR pipe/slash/symbol soup (when Latin OCR scans non-Latin script)
+        val symbolNoiseCount = nonWhitespaceChars.count { it in "|/\\~^`_*+=<>[]{};:@" }
+        if (symbolNoiseCount >= 4 && symbolNoiseCount.toFloat() / totalNonWs >= 0.07f) {
+            return true
+        }
+
+        return false
+    }
+
+    /**
+     * Recovers UTF-8 text that was accidentally decoded as ISO-8859-1 or Windows-1252.
+     */
+    fun tryRecoverUtf8Mojibake(text: String): String {
+        if (text.isBlank()) return text
+        if (!Regex("(?:à[¤¥ª«¦§®¯°±²³´µ]|Ã[\\u0080-\\u00BF]|Â[\\u0080-\\u00BF]|â€)").containsMatchIn(text)) {
+            return text
+        }
+        return runCatching {
+            val rawBytes = text.toByteArray(StandardCharsets.ISO_8859_1)
+            val utf8Decoded = String(rawBytes, StandardCharsets.UTF_8)
+            if (!utf8Decoded.contains('\uFFFD') && utf8Decoded.any { it.code > 0x00FF }) {
+                utf8Decoded
+            } else {
+                text
+            }
+        }.getOrDefault(text)
+    }
+
+    /**
+     * Sanitizes unassigned codepoints in Devanagari / Gujarati Unicode blocks (such as 0x0AE4 -> । and 0x0AE5 -> ॥)
+     * and strips Private Use Area / replacement characters.
+     */
+    fun sanitizeUnicodeScriptBlock(text: String): String {
+        if (text.isBlank()) return text
+        return buildString(text.length) {
+            for (ch in text) {
+                when (ch.code) {
+                    0x0AE4 -> append('।')
+                    0x0AE5 -> append('॥')
+                    0x0A84 -> append('અ')
+                    0x0A8E -> append('એ')
+                    0x0A92 -> append('ઓ')
+                    0x0AA9 -> append('ન')
+                    0x0AB1 -> append('ર')
+                    0x0AB4 -> append('ળ')
+                    0x0AC6 -> append('ે')
+                    0x0ACA -> append('ો')
+                    0xFFFD -> { /* drop replacement char */ }
+                    in 0xE000..0xF8FF -> { /* drop PUA char */ }
+                    in 0x0000..0x0008, in 0x000E..0x001F, in 0x007F..0x009F -> { /* drop control char */ }
+                    else -> append(ch)
+                }
+            }
+        }
+    }
+
+    /**
+     * Repairs corrupted, mojibake, or legacy font-encoded text (Kruti Dev 010 / DevLys / Chanakya)
+     * into clean Unicode text.
+     */
+    fun repairCorruptedOrLegacyEncodedText(rawText: String, hintLanguageOrTitle: String = ""): String {
+        if (rawText.isBlank()) return ""
+        val mojibakeRecovered = sanitizeUnicodeScriptBlock(tryRecoverUtf8Mojibake(rawText.trim()))
+        if (!isCorruptedOrLegacyEncodedText(mojibakeRecovered)) {
+            return mojibakeRecovered
+        }
+
+        // Convert Kruti Dev / DevLys legacy ASCII encoding into Unicode Devanagari
+        val convertedDevanagari = convertKrutiDevToUnicodeDevanagari(mojibakeRecovered)
+        val wantGujarati = hintLanguageOrTitle.contains("gujarat", ignoreCase = true) ||
+            hintLanguageOrTitle.equals("gu", ignoreCase = true)
+
+        val finalCandidate = if (wantGujarati && convertedDevanagari.any { it.code in 0x0900..0x097F }) {
+            transduceDevanagariToGujaratiUnicode(convertedDevanagari)
+        } else {
+            convertedDevanagari
+        }
+
+        return sanitizeUnicodeScriptBlock(finalCandidate).trim()
+    }
+
+    /**
+     * Deterministic converter for legacy Kruti Dev 010 / DevLys non-Unicode font encodings
+     * into standard Unicode Devanagari, including short-i ('f' -> 'ि') matra reordering and reph ('Z' -> 'र्').
+     */
+    fun convertKrutiDevToUnicodeDevanagari(kruti: String): String {
+        if (kruti.isBlank()) return ""
+        var s = kruti
+
+        val multiCharReplacements = listOf(
+            "vks" to "ओ",
+            "vkS" to "औ",
+            "vk" to "आ",
+            "bZ" to "ई",
+            ",s" to "ऐ",
+            "[k" to "ख",
+            "?k" to "घ",
+            ".k" to "ण",
+            "Fk" to "थ",
+            "/k" to "ध",
+            "Hk" to "भ",
+            "'k" to "श",
+            "\"k" to "ष",
+            "=k" to "त्र",
+            "|k" to "द्या",
+            "iz" to "प्र",
+            "fd" to "कि",
+            "dh" to "की",
+            "dks" to "को",
+            "dkS" to "कौ",
+            "dk" to "का",
+            "ds" to "के",
+            "dS" to "कै",
+            "gS" to "है",
+            "gSa" to "हैं",
+            "esa" to "में",
+            "eSa" to "मैं",
+            "ugha" to "नहीं",
+            "rFkk" to "तथा",
+            "v/;k;" to "अध्याय",
+            "fo|k" to "विद्या",
+            "Hkkjr" to "भारत",
+            "thou" to "जीवन",
+            "vkRek" to "आत्मा",
+            "fl)kar" to "सिद्धांत",
+            "ks" to "ो",
+            "kS" to "ौ"
+        )
+        for ((src, dst) in multiCharReplacements) {
+            s = s.replace(src, dst)
+        }
+
+        // Reorder Kruti Dev pre-base short-i matra 'f' (placed BEFORE consonant in Kruti Dev) to post-base 'ि' in Unicode
+        val singleCharMap = mapOf(
+            'v' to "अ", 'b' to "इ", 'm' to "उ", 'Å' to "ऊ", ',' to "ए", '_' to "ऋ",
+            'd' to "क", 'D' to "क्", '[' to "ख्", 'x' to "ग", 'X' to "ग्", '?' to "घ्",
+            'p' to "च", 'P' to "च्", 'N' to "छ", 't' to "ज", 'T' to "ज्", '>' to "झ",
+            'V' to "ट", 'B' to "ठ", 'M' to "ड", '<' to "ढ", '.' to "ण्",
+            'r' to "त", 'R' to "त्", 'F' to "थ्", 'n' to "द", '/' to "ध्", 'u' to "न", 'U' to "न्",
+            'i' to "प", 'I' to "प्", 'Q' to "फ", 'c' to "ब", 'C' to "ब्", 'H' to "भ्", 'e' to "म", 'E' to "म्",
+            ';' to "य", 'j' to "र", 'y' to "ल", 'Y' to "ल्", 'o' to "व", 'O' to "व्",
+            '\'' to "श्", '"' to "ष्", 'l' to "स", 'L' to "स्", 'g' to "ह",
+            'K' to "ज्ञ", '=' to "त्र्", 'J' to "श्र", '|' to "द्य", 'Ø' to "क्र", 'æ' to "द्र",
+            'k' to "ा", 'h' to "ी", 'q' to "ु", 'w' to "ू", '`' to "ृ", 's' to "े", 'S' to "ै",
+            'a' to "ं", '¡' to "ँ", '%' to "ः", '~' to "्", 'z' to "्र", 'A' to "।"
+        )
+
+        val sb = StringBuilder(s.length)
+        var i = 0
+        while (i < s.length) {
+            val ch = s[i]
+            if (ch == 'f' && i + 1 < s.length) {
+                // Short 'i' matra in Kruti Dev precedes the consonant (or half-consonant + consonant)
+                val nextCh = s[i + 1]
+                val mappedNext = singleCharMap[nextCh] ?: nextCh.toString()
+                if (mappedNext.endsWith("्") && i + 2 < s.length) {
+                    val afterHalf = s[i + 2]
+                    val mappedAfter = singleCharMap[afterHalf] ?: afterHalf.toString()
+                    sb.append(mappedNext).append(mappedAfter).append("ि")
+                    i += 3
+                    continue
+                } else {
+                    sb.append(mappedNext).append("ि")
+                    i += 2
+                    continue
+                }
+            } else if (ch == 'Z') {
+                // Reph (र्)
+                sb.append("र्")
+                i++
+                continue
+            }
+            val mapped = singleCharMap[ch]
+            if (mapped != null) {
+                sb.append(mapped)
+            } else {
+                sb.append(ch)
+            }
+            i++
+        }
+
+        return sb.toString()
+            .replace("अा", "आ")
+            .replace("अो", "ओ")
+            .replace("अौ", "औ")
+            .replace("एे", "ऐ")
+            .replace("्ा", "")
+    }
+
+    /**
+     * Safe, exact Unicode script transducer from Devanagari (0x0900..0x097F) to Gujarati (0x0A80..0x0AFF)
+     * that handles unassigned Gujarati codepoints (e.g. preserving । and ॥ instead of creating broken 0x0AE4/0x0AE5).
+     */
+    fun transduceDevanagariToGujaratiUnicode(text: String): String {
+        if (text.isBlank()) return ""
+        return buildString(text.length) {
+            for (ch in text) {
+                val code = ch.code
+                when {
+                    code == 0x0964 || code == 0x0AE4 -> append('।')
+                    code == 0x0965 || code == 0x0AE5 -> append('॥')
+                    code == 0x0970 -> append('.')
+                    code == 0x0904 -> append('અ')
+                    code == 0x090E -> append('એ')
+                    code == 0x0912 -> append('ઓ')
+                    code == 0x0929 -> append('ન')
+                    code == 0x0931 -> append('ર')
+                    code == 0x0934 -> append('ળ')
+                    code == 0x0946 -> append('ે')
+                    code == 0x094A -> append('ો')
+                    code in 0x0901..0x0939 ||
+                        code in 0x093C..0x094D ||
+                        code == 0x0950 ||
+                        code in 0x0960..0x0963 ||
+                        code in 0x0966..0x096F -> {
+                        val targetCode = code + 0x0180
+                        // Ensure target code is not one of the reserved holes in Gujarati block
+                        if (targetCode !in setOf(0x0A84, 0x0A8E, 0x0A92, 0x0AA9, 0x0AB1, 0x0AB4, 0x0AC6, 0x0ACA, 0x0ACE, 0x0ACF, 0x0AE4, 0x0AE5)) {
+                            append(targetCode.toChar())
+                        } else {
+                            append(ch)
+                        }
+                    }
+                    else -> append(ch)
+                }
+            }
+        }
     }
 
     private data class OcrBitmapOutcome(
@@ -431,14 +820,50 @@ object LocalOcrAndTranslationEngine {
     )
 
     /**
+     * Public helper to run On-Device ML Kit OCR on a saved page image file (used when repairing/re-OCRing books).
+     */
+    suspend fun runOnDeviceOcrOnBitmapFile(
+        imageFile: File,
+        hintTitleOrLang: String = ""
+    ): Pair<String, String>? = withContext(Dispatchers.IO) {
+        if (!imageFile.exists() || imageFile.length() == 0L) return@withContext null
+        val bitmap = runCatching { android.graphics.BitmapFactory.decodeFile(imageFile.absolutePath) }.getOrNull()
+            ?: return@withContext null
+        try {
+            val outcome = runOnDeviceMlKitOcrOnBitmap(
+                bitmap = bitmap,
+                hintTitleOrLang = hintTitleOrLang
+            )
+            if (outcome.recognizedText.isNotBlank()) {
+                normalizeRawOcrToCleanNativeText(outcome.recognizedText) to outcome.engineLabel
+            } else {
+                null
+            }
+        } finally {
+            runCatching {
+                if (!bitmap.isRecycled) bitmap.recycle()
+            }
+        }
+    }
+
+    /**
      * Runs Google ML Kit Bundled On-Device Text Recognition (both Devanagari/Indic and Latin recognizers)
      * on a rendered PDF page Bitmap, reusing shared recognizer instances across pages so native TFLite
      * buffers are never leaked on page 6+.
+     *
+     * CRITICAL FIX:
+     * - Google's Bundled Devanagari recognizer (`DevanagariTextRecognizerOptions`) recognizes BOTH
+     *   Devanagari script AND Latin script.
+     * - The Latin recognizer (`TextRecognizerOptions.DEFAULT_OPTIONS`) recognizes ONLY Latin script and
+     *   hallucinates unreadable ASCII symbol/pipe/letter noise when given Indic pages.
+     * - Therefore, whenever `devText` contains genuine Devanagari characters, we ALWAYS choose `devText`
+     *   and never let `latText` overwrite it. And we reject `latText` if `isCorruptedOrLegacyEncodedText(latText)` is true!
      */
     private suspend fun runOnDeviceMlKitOcrOnBitmap(
         bitmap: Bitmap,
         devanagariRecognizer: TextRecognizer? = null,
-        latinRecognizer: TextRecognizer? = null
+        latinRecognizer: TextRecognizer? = null,
+        hintTitleOrLang: String = ""
     ): OcrBitmapOutcome {
         return try {
             val inputImage = InputImage.fromBitmap(bitmap, 0)
@@ -452,10 +877,29 @@ object LocalOcrAndTranslationEngine {
 
             try {
                 val devResult: Text? = if (devClient != null) {
-                    withTimeoutOrNull(10_000L) {
+                    withTimeoutOrNull(12_000L) {
                         runCatching { devClient.process(inputImage).await() }.getOrNull()
                     }
                 } else null
+
+                val devText = devResult?.let { reconstructOrderedPageTextFromMlKit(it) }.orEmpty().trim()
+                val devanagariCharCount = devText.count { it.code in 0x0900..0x097F }
+                val wantGujarati = hintTitleOrLang.contains("gujarat", ignoreCase = true) ||
+                    hintTitleOrLang.equals("gu", ignoreCase = true)
+
+                // If Devanagari recognizer detected genuine Indic script characters, use it immediately!
+                if (devanagariCharCount >= 4 && !isCorruptedOrLegacyEncodedText(devText)) {
+                    val finalText = if (wantGujarati) {
+                        transduceDevanagariToGujaratiUnicode(devText)
+                    } else {
+                         sanitizeUnicodeScriptBlock(devText)
+                    }
+                    return OcrBitmapOutcome(
+                        recognizedText = finalText,
+                        engineLabel = if (wantGujarati) "MLKIT_ON_DEVICE_INDIC_GUJARATI_OCR" else "MLKIT_ON_DEVICE_DEVANAGARI_OCR",
+                        confidenceScore = 0.94f
+                    )
+                }
 
                 val latinResult: Text? = if (latClient != null) {
                     withTimeoutOrNull(10_000L) {
@@ -463,22 +907,21 @@ object LocalOcrAndTranslationEngine {
                     }
                 } else null
 
-                val devText = devResult?.let { reconstructOrderedPageTextFromMlKit(it) }.orEmpty().trim()
                 val latText = latinResult?.let { reconstructOrderedPageTextFromMlKit(it) }.orEmpty().trim()
+                val isLatClean = latText.isNotBlank() && !isCorruptedOrLegacyEncodedText(latText)
+                val isDevClean = devText.isNotBlank() && !isCorruptedOrLegacyEncodedText(devText)
 
-                // Choose the recognizer output that captured more script richness / characters
-                val hasDevanagariChars = devText.any { it.code in 0x0900..0x097F }
-                val chosenText = when {
-                    hasDevanagariChars && devText.length >= latText.length / 2 -> devText
-                    latText.length >= devText.length -> latText
-                    else -> devText
+                val chosenPair: Pair<String, String>? = when {
+                    devanagariCharCount > 0 && isDevClean -> devText to "MLKIT_ON_DEVICE_DEVANAGARI_OCR"
+                    isLatClean && latText.length >= devText.length -> latText to "MLKIT_ON_DEVICE_LATIN_OCR"
+                    isDevClean -> devText to "MLKIT_ON_DEVICE_DEVANAGARI_OCR"
+                    else -> null
                 }
 
-                val engine = if (hasDevanagariChars) "MLKIT_ON_DEVICE_DEVANAGARI_OCR" else "MLKIT_ON_DEVICE_LATIN_OCR"
-                if (chosenText.isNotBlank()) {
+                if (chosenPair != null && chosenPair.first.isNotBlank()) {
                     OcrBitmapOutcome(
-                        recognizedText = chosenText,
-                        engineLabel = engine,
+                        recognizedText = sanitizeUnicodeScriptBlock(chosenPair.first),
+                        engineLabel = chosenPair.second,
                         confidenceScore = 0.92f
                     )
                 } else {
@@ -1216,29 +1659,28 @@ object LocalOcrAndTranslationEngine {
             )
         )
 
-        // If source is Devanagari and target is Gujarati, we can also perform exact Unicode script transduction (0x0900 -> 0x0A80)!
-        if (targetDesc.code == "gu" && text.any { it.code in 0x0900..0x097F }) {
-            val gujaratiScript = buildString {
-                for (ch in text) {
-                    if (ch.code in 0x0901..0x097F) {
-                        append((ch.code + 0x0180).toChar())
-                    } else {
-                        append(ch)
-                    }
-                }
-            }
+        val cleanInput = if (isCorruptedOrLegacyEncodedText(text)) {
+            repairCorruptedOrLegacyEncodedText(text, sourceLang)
+        } else {
+            sanitizeUnicodeScriptBlock(text)
+        }
+
+        // If source is Devanagari and target is Gujarati, perform safe Unicode script transduction (0x0900 -> 0x0A80)
+        // preserving dandas (।, ॥) and avoiding unassigned Gujarati codepoints (0x0AE4, 0x0AE5).
+        if (targetDesc.code == "gu" && cleanInput.any { it.code in 0x0900..0x097F }) {
+            val gujaratiScript = transduceDevanagariToGujaratiUnicode(cleanInput)
             return "$gujaratiScript [સ્થાનિક લિપિ અને શબ્દકોશ રૂપાંતરણ • ${targetDesc.nativeName}]"
         }
 
         val targetLexicon = phraseMap[lowerTarget]
         if (targetLexicon != null) {
-            var transformed = text
+            var transformed = cleanInput
             for ((eng, localized) in targetLexicon) {
                 transformed = transformed.replace(Regex("\\b$eng\\b", RegexOption.IGNORE_CASE), localized)
             }
             return "[${targetDesc.nativeName} • Offline Local MT] $transformed"
         }
 
-        return "[${targetDesc.nativeName} (${targetDesc.name}) • Local Machine Translation] $text"
+        return "[${targetDesc.nativeName} (${targetDesc.name}) • Local Machine Translation] $cleanInput"
     }
 }

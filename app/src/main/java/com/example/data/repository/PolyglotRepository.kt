@@ -619,40 +619,54 @@ class PolyglotRepository(
         userId: Long,
         taskKind: AiTaskKind
     ): Result<ResolvedUserAiCredential> {
+        val configs = if (userId > 0L) dao.getAiConfigsForUser(userId) else emptyList()
+        if (configs.isNotEmpty()) {
+            val chosen = when (taskKind) {
+                AiTaskKind.OCR -> configs.find { it.isDefaultForOcr } ?: configs.first()
+                AiTaskKind.TRANSLATION -> configs.find { it.isDefaultForTranslation } ?: configs.first()
+                AiTaskKind.SUMMARY_AND_CHAT -> configs.find { it.isDefaultForSummaryAndChat } ?: configs.first()
+            }
+
+            val decryptedKey = SecurityVault.decryptApiKey(appContext, chosen.encryptedApiKey)
+            if (decryptedKey.isNotBlank()) {
+                val provider = AiProviderRegistry.findById(chosen.providerId)
+                return Result.success(
+                    ResolvedUserAiCredential(
+                        providerId = chosen.providerId,
+                        providerName = chosen.providerDisplayName,
+                        modelName = chosen.modelName,
+                        baseUrl = chosen.customBaseUrl.ifBlank { provider.defaultBaseUrl },
+                        decryptedApiKey = decryptedKey
+                    )
+                )
+            }
+        }
+
+        // Fallback to BuildConfig.GEMINI_API_KEY if configured via AI Studio Secrets / .env
+        val envGeminiKey = runCatching {
+            val field = com.example.BuildConfig::class.java.getDeclaredField("GEMINI_API_KEY")
+            (field.get(null) as? String)?.trim().orEmpty()
+        }.getOrDefault("")
+        if (envGeminiKey.isNotBlank() && !envGeminiKey.equals("YOUR_API_KEY", ignoreCase = true)) {
+            val geminiProvider = AiProviderRegistry.findById("gemini")
+            return Result.success(
+                ResolvedUserAiCredential(
+                    providerId = geminiProvider.id,
+                    providerName = geminiProvider.displayName,
+                    modelName = "gemini-2.5-flash",
+                    baseUrl = geminiProvider.defaultBaseUrl,
+                    decryptedApiKey = envGeminiKey
+                )
+            )
+        }
+
         if (userId <= 0L) {
             return Result.failure(
                 IllegalStateException("Please sign in and configure your AI provider in AI Settings to run live AI tasks.")
             )
         }
-        val configs = dao.getAiConfigsForUser(userId)
-        if (configs.isEmpty()) {
-            return Result.failure(
-                IllegalStateException("No AI provider configured for your account yet. Open 'AI Settings' to add your OpenAI, Gemini, Anthropic, or OpenRouter API key.")
-            )
-        }
-
-        val chosen = when (taskKind) {
-            AiTaskKind.OCR -> configs.find { it.isDefaultForOcr } ?: configs.first()
-            AiTaskKind.TRANSLATION -> configs.find { it.isDefaultForTranslation } ?: configs.first()
-            AiTaskKind.SUMMARY_AND_CHAT -> configs.find { it.isDefaultForSummaryAndChat } ?: configs.first()
-        }
-
-        val decryptedKey = SecurityVault.decryptApiKey(appContext, chosen.encryptedApiKey)
-        if (decryptedKey.isBlank()) {
-            return Result.failure(
-                IllegalStateException("Could not unlock API key for ${chosen.providerDisplayName}. Please re-enter your key in AI Settings.")
-            )
-        }
-
-        val provider = AiProviderRegistry.findById(chosen.providerId)
-        return Result.success(
-            ResolvedUserAiCredential(
-                providerId = chosen.providerId,
-                providerName = chosen.providerDisplayName,
-                modelName = chosen.modelName,
-                baseUrl = chosen.customBaseUrl.ifBlank { provider.defaultBaseUrl },
-                decryptedApiKey = decryptedKey
-            )
+        return Result.failure(
+            IllegalStateException("No AI provider configured for your account yet. Open 'AI Settings' to add your OpenAI, Gemini, Anthropic, or OpenRouter API key.")
         )
     }
 
@@ -1395,17 +1409,27 @@ class PolyglotRepository(
             val fingerprint = extracted.sourceFingerprintHash
             val existingByHash = dao.getBookByContentHash(fingerprint)
             if (existingByHash != null) {
-                PdfProcessor.purgeEphemeralFile(extracted.ephemeralPdfFile)
-                if (userId > 0L) {
-                    dao.insertUserBookAccess(
-                        UserBookAccessEntity(
-                            userId = userId,
-                            bookId = existingByHash.id,
-                            accessType = "OWNER"
-                        )
-                    )
+                val existingParas = dao.getParagraphsForBook(existingByHash.id)
+                val hasCorruptedExisting = existingParas.any { p ->
+                    com.example.util.LocalOcrAndTranslationEngine.isCorruptedOrLegacyEncodedText(p.originalText) ||
+                        p.originalText.startsWith("[Page ")
                 }
-                return Result.success(existingByHash)
+                if (!hasCorruptedExisting) {
+                    PdfProcessor.purgeEphemeralFile(extracted.ephemeralPdfFile)
+                    if (userId > 0L) {
+                        dao.insertUserBookAccess(
+                            UserBookAccessEntity(
+                                userId = userId,
+                                bookId = existingByHash.id,
+                                accessType = "OWNER"
+                            )
+                        )
+                    }
+                    return Result.success(existingByHash)
+                } else {
+                    // Replace previously corrupted extraction with the newly extracted clean Unicode edition
+                    dao.deleteBook(existingByHash.id)
+                }
             }
 
             val engineLabel = when {
@@ -1482,8 +1506,9 @@ class PolyglotRepository(
 
                 var aiUpdatedAnyPage = false
                 for (pageRes in extracted.extractedPages) {
-                    // Only call external AI Vision OCR if local OCR found 0 text on a difficult scanned page AND user configured an AI key
-                    if (pageRes.extractionEngineUsed == "LOCAL_OCR_SCAN_EMPTY" &&
+                    val pageNeedsVisionFallback = pageRes.extractionEngineUsed == "LOCAL_OCR_SCAN_EMPTY" ||
+                        com.example.util.LocalOcrAndTranslationEngine.isCorruptedOrLegacyEncodedText(pageRes.cleanNativeText)
+                    if (pageNeedsVisionFallback &&
                         optionalCredential != null &&
                         scratchPdf != null &&
                         scratchPdf.exists()
@@ -1704,6 +1729,191 @@ class PolyglotRepository(
             // CRITICAL ZERO-HOST GUARANTEE: Always delete the ephemeral scratch file immediately!
             PdfProcessor.purgeEphemeralFile(extracted.ephemeralPdfFile)
         }
+    }
+
+    /**
+     * Repairs unreadable / legacy-encoded / mojibake source text and translations for a book in place,
+     * re-running visual on-device OCR (or AI Vision OCR if configured) on saved page renders and applying
+     * deterministic legacy font (Kruti Dev / DevLys / Chanakya) & UTF-8 mojibake Unicode conversion.
+     */
+    suspend fun repairBookEncodingAndReOcrIfNeeded(
+        userId: Long,
+        bookId: Long,
+        forceReOcr: Boolean = false,
+        onProgress: (String) -> Unit = {}
+    ): Result<Int> {
+        val book = dao.getBookById(bookId)
+            ?: return Result.failure(IllegalArgumentException("Book not found."))
+        val paragraphs = dao.getParagraphsForBook(bookId)
+        if (paragraphs.isEmpty()) return Result.success(0)
+
+        val pagesByNum = dao.getBookPagesForBook(bookId).associateBy { it.pageNumber }
+        val optionalCredential = resolveUserCredentialForTask(userId, AiTaskKind.OCR).getOrNull()
+        var repairedCount = 0
+
+        // 1. Check if any paragraphs have corrupted/legacy encoding or placeholder scan markers
+        val corruptedParagraphs = paragraphs.filter { p ->
+            forceReOcr ||
+                com.example.util.LocalOcrAndTranslationEngine.isCorruptedOrLegacyEncodedText(p.originalText) ||
+                p.originalText.startsWith("[Page ")
+        }
+
+        if (corruptedParagraphs.isNotEmpty()) {
+            val pagesToReOcr = corruptedParagraphs.map { it.originalPageNumber }.distinct()
+            val newlyExtractedTextByPage = mutableMapOf<Int, String>()
+
+            for ((idx, pageNum) in pagesToReOcr.withIndex()) {
+                val pageEntity = pagesByNum[pageNum]
+                val imgPath = pageEntity?.pageImagePath.orEmpty()
+                val imgFile = if (imgPath.isNotBlank()) File(imgPath) else null
+                if (imgFile != null && imgFile.exists() && imgFile.length() > 0L) {
+                    onProgress("Re-running visual OCR on page $pageNum (${idx + 1}/${pagesToReOcr.size})…")
+
+                    // Try Vision OCR if user has AI credential configured
+                    var visionText: String? = null
+                    if (optionalCredential != null) {
+                        val bmp = runCatching { android.graphics.BitmapFactory.decodeFile(imgFile.absolutePath) }.getOrNull()
+                        val b64 = try {
+                            bmp?.let { PdfProcessor.bitmapToBase64(it, quality = 80) }
+                        } finally {
+                            runCatching { if (bmp != null && !bmp.isRecycled) bmp.recycle() }
+                        }
+                        if (b64 != null) {
+                            val dto = MultiProviderAiGateway.performStructuredOcrOnPages(
+                                credential = optionalCredential,
+                                bookTitle = book.title,
+                                pageNumbers = listOf(pageNum),
+                                pageImagesBase64 = listOf(b64)
+                            ).getOrNull()
+                            val paras = dto?.chapters?.flatMap { it.sections }?.flatMap { it.paragraphs }.orEmpty()
+                            if (paras.isNotEmpty()) {
+                                visionText = paras.joinToString("\n\n") { it.cleanText }
+                            }
+                        }
+                    }
+
+                    // Otherwise run high-accuracy On-Device ML Kit Devanagari/Latin OCR on the saved page bitmap
+                    val localOcrPair = if (visionText.isNullOrBlank()) {
+                        com.example.util.LocalOcrAndTranslationEngine.runOnDeviceOcrOnBitmapFile(
+                            imageFile = imgFile,
+                            hintTitleOrLang = "${book.title} ${book.originalLanguage}"
+                        )
+                    } else null
+
+                    val bestPageText = visionText ?: localOcrPair?.first
+                    if (!bestPageText.isNullOrBlank() &&
+                        !com.example.util.LocalOcrAndTranslationEngine.isCorruptedOrLegacyEncodedText(bestPageText)
+                    ) {
+                        newlyExtractedTextByPage[pageNum] = bestPageText
+                        if (pageEntity != null) {
+                            dao.insertBookPages(
+                                listOf(
+                                    pageEntity.copy(
+                                        rawOcrText = bestPageText,
+                                        cleanNativeText = bestPageText,
+                                        extractionEngineUsed = if (visionText != null) "AI_VISION_REPAIR_OCR" else (localOcrPair?.second ?: "MLKIT_REPAIR_OCR"),
+                                        detectedSourceLanguage = com.example.util.LocalOcrAndTranslationEngine.detectLanguageFastDeterministic(bestPageText)
+                                    )
+                                )
+                            )
+                        }
+                    }
+                }
+            }
+
+            // Update paragraphs for affected pages or repair legacy Kruti Dev / Mojibake encoding directly
+            val paragraphsByPage = corruptedParagraphs.groupBy { it.originalPageNumber }
+            for ((pageNum, pageParas) in paragraphsByPage) {
+                val freshPageText = newlyExtractedTextByPage[pageNum]
+                val freshBlocks = freshPageText
+                    ?.split(Regex("\\n\\s*\\n"))
+                    ?.map { it.trim() }
+                    ?.filter { it.isNotEmpty() }
+                    .orEmpty()
+
+                pageParas.forEachIndexed { idx, para ->
+                    val candidateFromFreshOcr = when {
+                        freshBlocks.isEmpty() -> null
+                        pageParas.size == 1 -> freshBlocks.joinToString("\n\n")
+                        idx < freshBlocks.size -> freshBlocks[idx]
+                        else -> null
+                    }
+                    val repairedText = if (!candidateFromFreshOcr.isNullOrBlank()) {
+                        candidateFromFreshOcr
+                    } else {
+                        com.example.util.LocalOcrAndTranslationEngine.repairCorruptedOrLegacyEncodedText(
+                            para.originalText,
+                            "${book.title} ${book.originalLanguage}"
+                        )
+                    }
+
+                    if (repairedText.isNotBlank() && repairedText != para.originalText) {
+                        val detectedLang = com.example.util.LocalOcrAndTranslationEngine.detectLanguageFastDeterministic(repairedText)
+                        val newHash = SecurityVault.computeContentFingerprint(repairedText)
+                        dao.updateParagraph(
+                            para.copy(
+                                originalText = repairedText,
+                                originalLanguage = detectedLang,
+                                normalizedSearchText = repairedText.lowercase(),
+                                ocrVersion = para.ocrVersion + 1,
+                                sourceContentHash = newHash
+                            )
+                        )
+                        repairedCount++
+                    }
+                }
+            }
+        }
+
+        // 2. Also repair any section headings that had legacy/corrupted encoding
+        val chapters = dao.getChaptersForBook(bookId)
+        for (ch in chapters) {
+            val sections = dao.getSectionsForChapter(ch.id)
+            for (sec in sections) {
+                if (com.example.util.LocalOcrAndTranslationEngine.isCorruptedOrLegacyEncodedText(sec.heading)) {
+                    val repairedHeading = com.example.util.LocalOcrAndTranslationEngine.repairCorruptedOrLegacyEncodedText(
+                        sec.heading,
+                        "${book.title} ${book.originalLanguage}"
+                    )
+                    if (repairedHeading.isNotBlank() && repairedHeading != sec.heading) {
+                        dao.updateSection(sec.copy(heading = repairedHeading))
+                    }
+                }
+            }
+        }
+
+        // 3. Also sanitize any stored translations for this book that had unassigned Gujarati dandas (0x0AE4/0x0AE5) or legacy encoding
+        val allBookTranslations = dao.getAllCanonicalTranslationsInSystem().filter { it.bookId == bookId }
+        for (trans in allBookTranslations) {
+            if (com.example.util.LocalOcrAndTranslationEngine.isCorruptedOrLegacyEncodedText(trans.translatedText)) {
+                val cleanedTrans = com.example.util.LocalOcrAndTranslationEngine.repairCorruptedOrLegacyEncodedText(
+                    trans.translatedText,
+                    trans.targetLanguage
+                )
+                if (cleanedTrans.isNotBlank() && cleanedTrans != trans.translatedText) {
+                    dao.insertTranslation(
+                        trans.copy(
+                            translatedText = cleanedTrans
+                        )
+                    )
+                    repairedCount++
+                }
+            }
+        }
+
+        if (repairedCount > 0) {
+            val refreshedParas = dao.getParagraphsForBook(bookId)
+            val sample = refreshedParas.take(15).joinToString("\n") { it.originalText }
+            val updatedLang = com.example.util.LocalOcrAndTranslationEngine.detectLanguageFastDeterministic(sample)
+            dao.updateBook(
+                book.copy(
+                    originalLanguage = updatedLang,
+                    currentOcrVersion = book.currentOcrVersion + 1
+                )
+            )
+        }
+
+        return Result.success(repairedCount)
     }
 
     /**

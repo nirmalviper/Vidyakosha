@@ -188,6 +188,9 @@ interface PolyglotDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertChapter(chapter: ChapterEntity): Long
 
+    @Update
+    suspend fun updateChapter(chapter: ChapterEntity)
+
     @Query("SELECT * FROM chapters WHERE bookId = :bookId ORDER BY chapterOrder ASC")
     fun getChaptersForBookFlow(bookId: Long): Flow<List<ChapterEntity>>
 
@@ -196,6 +199,9 @@ interface PolyglotDao {
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertSection(section: SectionEntity): Long
+
+    @Update
+    suspend fun updateSection(section: SectionEntity)
 
     @Query("SELECT * FROM sections WHERE bookId = :bookId ORDER BY chapterId ASC, sectionOrder ASC")
     fun getSectionsForBookFlow(bookId: Long): Flow<List<SectionEntity>>

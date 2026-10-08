@@ -1,2 +1,2 @@
-0dbef4327b0ffce42638563f1b8325b94d13535e027e398056102272e72c09b2  releases/lipi-v1.0.0.apk
-0dbef4327b0ffce42638563f1b8325b94d13535e027e398056102272e72c09b2  releases/lipi-latest.apk
+cf7a0d5fcefa88db9ccdac9d660cd2c60d3f34c5fe3cfb92b4cf42e2963d4231  lipi.apk
+cf7a0d5fcefa88db9ccdac9d660cd2c60d3f34c5fe3cfb92b4cf42e2963d4231  releases/lipi-v1.0.0.apk

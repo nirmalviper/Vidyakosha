@@ -795,7 +795,8 @@ fun PolyglotPlatformApp(
                                                         viewModel.navigateToDestination(TopLevelDestination.AI_SETTINGS)
                                                     },
                                                     appThemeMode = appThemeMode,
-                                                    onSelectAppThemeMode = { viewModel.setAppThemeMode(it) }
+                                                    onSelectAppThemeMode = { viewModel.setAppThemeMode(it) },
+                                                    onRepairBookEncodingAndOcr = { viewModel.repairActiveBookEncodingAndOcr() }
                                                 )
                                             }
 

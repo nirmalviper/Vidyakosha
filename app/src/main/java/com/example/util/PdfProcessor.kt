@@ -751,7 +751,7 @@ object PdfProcessor {
     suspend fun renderPageToBitmap(
         file: File,
         pageIndex: Int,
-        maxDimension: Int = 1200
+        maxDimension: Int = 2048
     ): Bitmap? = withContext(Dispatchers.IO) {
         if (!file.exists()) return@withContext null
         try {
@@ -768,13 +768,13 @@ object PdfProcessor {
     fun renderPageWithOpenRenderer(
         renderer: PdfRenderer,
         pageIndex: Int,
-        maxDimension: Int = 1200
+        maxDimension: Int = 2048
     ): Bitmap? {
         if (pageIndex < 0 || pageIndex >= renderer.pageCount) return null
         return try {
             renderer.openPage(pageIndex).use { page ->
                 val ratio = page.width.toFloat().coerceAtLeast(1f) / page.height.toFloat().coerceAtLeast(1f)
-                val safeMaxDim = maxDimension.coerceIn(360, 1400)
+                val safeMaxDim = maxDimension.coerceIn(360, 2200)
                 val width: Int
                 val height: Int
                 if (ratio >= 1f) {

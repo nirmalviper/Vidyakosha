@@ -28,6 +28,23 @@ val LoraSerif = FontFamily(
     Font(R.font.lora, FontWeight.Bold)
 )
 
+/**
+ * Returns [defaultLatinFont] (LoraSerif) for Latin/Cyrillic text, and [FontFamily.Default]
+ * (system Noto Sans/Serif Indic/CJK/Arabic HarfBuzz shaper) whenever [text] contains
+ * Devanagari, Gujarati, Tamil, Telugu, Bengali, Kannada, Malayalam, Gurmukhi, Odia, Arabic, or CJK
+ * characters so complex script conjuncts and vowel matras never render as broken glyphs.
+ */
+fun resolveScriptAwareFontFamily(
+    text: String,
+    defaultLatinFont: FontFamily = LoraSerif
+): FontFamily {
+    val hasNonLatinComplexScript = text.any { ch ->
+        val code = ch.code
+        code in 0x0590..0x1FFF || code in 0x2E80..0xD7AF
+    }
+    return if (hasNonLatinComplexScript) FontFamily.Default else defaultLatinFont
+}
+
 val Typography = Typography(
     displayLarge = TextStyle(
         fontFamily = LoraSerif,
