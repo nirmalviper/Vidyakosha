@@ -24,21 +24,31 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Verify or Prepare APK Release Package
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v3
+
+      - name: Prepare or Build Signed Android APK
         run: |
           mkdir -p releases
           if [ -f "releases/lipi-v1.0.0.apk" ]; then
-            echo "Found pre-built signed APK in releases/lipi-v1.0.0.apk"
-            cp releases/lipi-v1.0.0.apk releases/lipi-latest.apk
-            sha256sum releases/lipi-v1.0.0.apk releases/lipi-latest.apk > releases/SHA256SUMS.txt
-          elif [ -f "releases/vidyakosha-v1.0.0.apk" ]; then
-            cp releases/vidyakosha-v1.0.0.apk releases/lipi-v1.0.0.apk
-            cp releases/vidyakosha-v1.0.0.apk releases/lipi-latest.apk
-            sha256sum releases/lipi-v1.0.0.apk releases/lipi-latest.apk > releases/SHA256SUMS.txt
+            echo "Using pre-packaged signed APK in releases/lipi-v1.0.0.apk"
           else
-            echo "APK not found in releases/, check repository files."
-            exit 1
+            echo "Building signed APK from source via Gradle..."
+            if [ -f "debug.keystore.base64" ] && [ ! -f "debug.keystore" ]; then
+              base64 -d debug.keystore.base64 > debug.keystore
+            fi
+            gradle assembleDebug --no-daemon
+            cp app/build/outputs/apk/debug/app-debug.apk releases/lipi-v1.0.0.apk
           fi
+          cp releases/lipi-v1.0.0.apk releases/lipi-latest.apk
+          sha256sum releases/lipi-v1.0.0.apk releases/lipi-latest.apk > releases/SHA256SUMS.txt
+          ls -lh releases/
 
       - name: Upload APK to GitHub Actions Artifacts
         uses: actions/upload-artifact@v4

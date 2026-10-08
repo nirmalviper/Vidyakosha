@@ -109,22 +109,21 @@ object PdfProcessor {
                 }
             }
 
-            val rawBytes = contentResolver.openInputStream(uri)?.use { it.readBytes() }
-                ?: return@withContext Result.failure(IllegalArgumentException("Unable to read selected file."))
-
-            if (rawBytes.isEmpty()) {
-                return@withContext Result.failure(IllegalArgumentException("The selected file is empty."))
+            val lowerName = displayName.lowercase()
+            val headerBytes = ByteArray(8)
+            val headerRead = contentResolver.openInputStream(uri)?.use { it.read(headerBytes) } ?: -1
+            if (headerRead <= 0) {
+                return@withContext Result.failure(IllegalArgumentException("The selected file is empty or unreadable."))
             }
 
-            val lowerName = displayName.lowercase()
-            val isPdfMagic = rawBytes.size >= 4 &&
-                rawBytes[0] == '%'.code.toByte() &&
-                rawBytes[1] == 'P'.code.toByte() &&
-                rawBytes[2] == 'D'.code.toByte() &&
-                rawBytes[3] == 'F'.code.toByte()
-            val isZipMagic = rawBytes.size >= 4 &&
-                rawBytes[0] == 'P'.code.toByte() &&
-                rawBytes[1] == 'K'.code.toByte()
+            val isPdfMagic = headerRead >= 4 &&
+                headerBytes[0] == '%'.code.toByte() &&
+                headerBytes[1] == 'P'.code.toByte() &&
+                headerBytes[2] == 'D'.code.toByte() &&
+                headerBytes[3] == 'F'.code.toByte()
+            val isZipMagic = headerRead >= 4 &&
+                headerBytes[0] == 'P'.code.toByte() &&
+                headerBytes[1] == 'K'.code.toByte()
 
             val format = when {
                 lowerName.endsWith(".epub") || mimeType.contains("epub") || (isZipMagic && !isPdfMagic) ->
@@ -149,21 +148,35 @@ object PdfProcessor {
 
             when (format) {
                 ExtractedFormat.EPUB -> {
+                    val rawBytes = contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                        ?: return@withContext Result.failure(IllegalArgumentException("Unable to read EPUB file."))
                     Result.success(extractFromEpubBytes(rawBytes, cleanTitle))
                 }
                 ExtractedFormat.MARKDOWN,
                 ExtractedFormat.PLAIN_TEXT,
                 ExtractedFormat.HTML,
                 ExtractedFormat.P2P_DERIVATIVE_JSON -> {
+                    val rawBytes = contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                        ?: return@withContext Result.failure(IllegalArgumentException("Unable to read document file."))
                     Result.success(extractFromTextOrHtmlBytes(rawBytes, cleanTitle, format))
                 }
                 ExtractedFormat.PDF -> {
                     val scratchDir = File(context.cacheDir, "ephemeral_p2p_scratch").apply { mkdirs() }
                     val scratchPdf = File(scratchDir, "ephemeral_${System.currentTimeMillis()}.pdf")
-                    FileOutputStream(scratchPdf).use { it.write(rawBytes) }
+                    var copiedByteSize = 0L
+                    contentResolver.openInputStream(uri)?.use { input ->
+                        FileOutputStream(scratchPdf).use { output ->
+                            copiedByteSize = input.copyTo(output, bufferSize = 16 * 1024)
+                        }
+                    } ?: return@withContext Result.failure(IllegalArgumentException("Unable to stream selected PDF file."))
+
+                    if (copiedByteSize <= 0L || !scratchPdf.exists()) {
+                        purgeEphemeralFile(scratchPdf)
+                        return@withContext Result.failure(IllegalArgumentException("The selected PDF file is empty."))
+                    }
 
                     val prelimFingerprint = SecurityVault.computeContentFingerprint(
-                        "PDF_${cleanTitle}_${rawBytes.size}"
+                        "PDF_${cleanTitle}_$copiedByteSize"
                     )
 
                     val deterministicResult = LocalOcrAndTranslationEngine.extractAllPagesFromPdfDeterministically(
@@ -178,9 +191,10 @@ object PdfProcessor {
                     }
 
                     val contentSampleForHash = deterministicResult.pages
-                        .joinToString("|") { "${it.pageNumber}:${it.cleanNativeText.take(250)}" }
+                        .take(15)
+                        .joinToString("|") { "${it.pageNumber}:${it.cleanNativeText.take(180)}" }
                     val fingerprint = SecurityVault.computeContentFingerprint(
-                        "PDF_${deterministicResult.documentTitle}_${rawBytes.size}_${deterministicResult.totalPages}_$contentSampleForHash"
+                        "PDF_${deterministicResult.documentTitle}_${copiedByteSize}_${deterministicResult.totalPages}_$contentSampleForHash"
                     )
 
                     Result.success(
@@ -189,7 +203,7 @@ object PdfProcessor {
                             authorOrSource = deterministicResult.documentAuthor,
                             format = ExtractedFormat.PDF,
                             detectedLanguage = deterministicResult.detectedPrimaryLanguage,
-                            originalByteSize = rawBytes.size.toLong(),
+                            originalByteSize = copiedByteSize,
                             unitCount = deterministicResult.totalPages,
                             sourceFingerprintHash = fingerprint,
                             ephemeralPdfFile = scratchPdf,
@@ -201,8 +215,10 @@ object PdfProcessor {
                     )
                 }
             }
-        } catch (e: Exception) {
-            Result.failure(e)
+        } catch (t: Throwable) {
+            Result.failure(
+                if (t is Exception) t else IllegalStateException("PDF extraction failed: ${t.localizedMessage ?: t.javaClass.simpleName}", t)
+            )
         }
     }
 
@@ -735,34 +751,64 @@ object PdfProcessor {
     suspend fun renderPageToBitmap(
         file: File,
         pageIndex: Int,
-        maxDimension: Int = 1350
+        maxDimension: Int = 1200
     ): Bitmap? = withContext(Dispatchers.IO) {
         if (!file.exists()) return@withContext null
         try {
             ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY).use { pfd ->
                 PdfRenderer(pfd).use { renderer ->
-                    if (pageIndex < 0 || pageIndex >= renderer.pageCount) return@withContext null
-                    renderer.openPage(pageIndex).use { page ->
-                        val ratio = page.width.toFloat() / page.height.toFloat().coerceAtLeast(1f)
-                        val width: Int
-                        val height: Int
-                        if (ratio >= 1f) {
-                            width = maxDimension
-                            height = (maxDimension / ratio).toInt().coerceAtLeast(1)
-                        } else {
-                            height = maxDimension
-                            width = (maxDimension * ratio).toInt().coerceAtLeast(1)
-                        }
-
-                        val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
-                        val canvas = Canvas(bitmap)
-                        canvas.drawColor(Color.WHITE)
-                        page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
-                        bitmap
-                    }
+                    renderPageWithOpenRenderer(renderer, pageIndex, maxDimension)
                 }
             }
-        } catch (e: Exception) {
+        } catch (_: Throwable) {
+            null
+        }
+    }
+
+    fun renderPageWithOpenRenderer(
+        renderer: PdfRenderer,
+        pageIndex: Int,
+        maxDimension: Int = 1200
+    ): Bitmap? {
+        if (pageIndex < 0 || pageIndex >= renderer.pageCount) return null
+        return try {
+            renderer.openPage(pageIndex).use { page ->
+                val ratio = page.width.toFloat().coerceAtLeast(1f) / page.height.toFloat().coerceAtLeast(1f)
+                val safeMaxDim = maxDimension.coerceIn(360, 1400)
+                val width: Int
+                val height: Int
+                if (ratio >= 1f) {
+                    width = safeMaxDim
+                    height = (safeMaxDim / ratio).toInt().coerceAtLeast(1)
+                } else {
+                    height = safeMaxDim
+                    width = (safeMaxDim * ratio).toInt().coerceAtLeast(1)
+                }
+
+                val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+                val canvas = Canvas(bitmap)
+                canvas.drawColor(Color.WHITE)
+                page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+                bitmap
+            }
+        } catch (_: OutOfMemoryError) {
+            System.gc()
+            try {
+                renderer.openPage(pageIndex).use { page ->
+                    val fallbackDim = 720
+                    val ratio = page.width.toFloat().coerceAtLeast(1f) / page.height.toFloat().coerceAtLeast(1f)
+                    val width = if (ratio >= 1f) fallbackDim else (fallbackDim * ratio).toInt().coerceAtLeast(1)
+                    val height = if (ratio >= 1f) (fallbackDim / ratio).toInt().coerceAtLeast(1) else fallbackDim
+                    val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+                    val canvas = Canvas(bitmap)
+                    canvas.drawColor(Color.WHITE)
+                    page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+                    bitmap
+                }
+            } catch (_: Throwable) {
+                null
+            }
+        } catch (_: Throwable) {
             null
         }
     }

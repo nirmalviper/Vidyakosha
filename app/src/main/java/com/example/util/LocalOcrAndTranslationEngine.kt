@@ -15,11 +15,15 @@ import com.google.mlkit.nl.translate.TranslatorOptions
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.Text
 import com.google.mlkit.vision.text.TextRecognition
+import com.google.mlkit.vision.text.TextRecognizer
 import com.google.mlkit.vision.text.devanagari.DevanagariTextRecognizerOptions
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions
 import com.tom_roush.pdfbox.android.PDFBoxResourceLoader
+import com.tom_roush.pdfbox.io.MemoryUsageSetting
 import com.tom_roush.pdfbox.pdmodel.PDDocument
 import com.tom_roush.pdfbox.text.PDFTextStripper
+import android.graphics.pdf.PdfRenderer
+import android.os.ParcelFileDescriptor
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
@@ -137,23 +141,37 @@ object LocalOcrAndTranslationEngine {
 
         try {
             val rendererPageCount = PdfProcessor.getPdfPageCount(pdfFile)
-            val pdDocument: PDDocument? = runCatching { PDDocument.load(pdfFile) }.getOrNull()
+            val pdDocument: PDDocument? = runCatching {
+                PDDocument.load(pdfFile, MemoryUsageSetting.setupTempFileOnly())
+            }.getOrElse {
+                runCatching { PDDocument.load(pdfFile) }.getOrNull()
+            }
+
+            var pfd: ParcelFileDescriptor? = null
+            var sharedRenderer: PdfRenderer? = null
+            var sharedDevanagariRecognizer: TextRecognizer? = null
+            var sharedLatinRecognizer: TextRecognizer? = null
 
             try {
-                val totalPages = maxOf(rendererPageCount, pdDocument?.numberOfPages ?: 0)
+                pfd = runCatching { ParcelFileDescriptor.open(pdfFile, ParcelFileDescriptor.MODE_READ_ONLY) }.getOrNull()
+                sharedRenderer = runCatching { pfd?.let { PdfRenderer(it) } }.getOrNull()
+
+                val totalPages = maxOf(rendererPageCount, sharedRenderer?.pageCount ?: 0, pdDocument?.numberOfPages ?: 0)
                 if (totalPages <= 0) {
                     return@withContext Result.failure(IllegalArgumentException("The PDF contains 0 readable pages."))
                 }
 
                 // Extract PDF document metadata if present
-                pdDocument?.documentInformation?.let { info ->
-                    val metaTitle = info.title?.trim().orEmpty()
-                    if (metaTitle.length >= 3 && !metaTitle.equals("untitled", ignoreCase = true)) {
-                        docTitle = metaTitle
-                    }
-                    val metaAuthor = info.author?.trim().orEmpty()
-                    if (metaAuthor.isNotBlank()) {
-                        docAuthor = metaAuthor
+                runCatching {
+                    pdDocument?.documentInformation?.let { info ->
+                        val metaTitle = info.title?.trim().orEmpty()
+                        if (metaTitle.length >= 3 && !metaTitle.equals("untitled", ignoreCase = true)) {
+                            docTitle = metaTitle
+                        }
+                        val metaAuthor = info.author?.trim().orEmpty()
+                        if (metaAuthor.isNotBlank()) {
+                            docAuthor = metaAuthor
+                        }
                     }
                 }
 
@@ -164,8 +182,12 @@ object LocalOcrAndTranslationEngine {
                     }
                 }.getOrNull()
 
-                // Pre-parse raw PDF streams as backup for custom font encodings
-                val rawPdfBytes = runCatching { pdfFile.readBytes() }.getOrNull()
+                // Only read raw PDF bytes for low-level stream fallback if the file is reasonably small (< 12 MB)
+                val rawPdfBytes = if (pdfFile.length() <= 12L * 1024L * 1024L) {
+                    runCatching { pdfFile.readBytes() }.getOrNull()
+                } else {
+                    null
+                }
 
                 for (pageIndex in 0 until totalPages) {
                     val pageNum = pageIndex + 1
@@ -175,98 +197,131 @@ object LocalOcrAndTranslationEngine {
                         totalPages
                     )
 
-                    // 1. Try extracting selectable native text via Apache PDFBox for this exact page
-                    val pdfBoxPageText = if (pdDocument != null && pdfStripper != null && pageNum <= pdDocument.numberOfPages) {
-                        runCatching {
-                            pdfStripper.startPage = pageNum
-                            pdfStripper.endPage = pageNum
-                            pdfStripper.getText(pdDocument).trim()
-                        }.getOrDefault("")
-                    } else {
-                        ""
-                    }
-
-                    // 2. If PDFBox returned empty or garbled CIDs, check low-level PDF stream text operators
-                    val streamFallbackText = if (!isMeaningfulSelectableText(pdfBoxPageText) && rawPdfBytes != null) {
-                        extractSelectableTextFromRawPdfStream(rawPdfBytes, pageIndex)
-                    } else {
-                        ""
-                    }
-
-                    val candidateNativeText = when {
-                        isMeaningfulSelectableText(pdfBoxPageText) -> pdfBoxPageText
-                        isMeaningfulSelectableText(streamFallbackText) -> streamFallbackText
-                        else -> ""
-                    }
-
-                    val hasNativeText = candidateNativeText.isNotBlank()
-
-                    // 3. Render page preview image (and high-res bitmap if OCR is needed)
-                    val renderDim = if (hasNativeText) 960 else 1750
-                    val pageBitmap = PdfProcessor.renderPageToBitmap(pdfFile, pageIndex, maxDimension = renderDim)
-                    val savedImagePath = if (pageBitmap != null) {
-                        val imgFile = File(pageRendersDir, "doc_${fingerprintPrefix.take(10)}_p${pageNum}.jpg")
-                        runCatching {
-                            FileOutputStream(imgFile).use { out ->
-                                pageBitmap.compress(Bitmap.CompressFormat.JPEG, 78, out)
+                    val pageResult = try {
+                        // 1. Try extracting selectable native text via Apache PDFBox for this exact page
+                        val pdfBoxPageText = if (pdDocument != null && pdfStripper != null && pageNum <= pdDocument.numberOfPages) {
+                            try {
+                                pdfStripper.startPage = pageNum
+                                pdfStripper.endPage = pageNum
+                                pdfStripper.getText(pdDocument).trim()
+                            } catch (_: Throwable) {
+                                ""
                             }
-                            imgFile.absolutePath
-                        }.getOrDefault("")
-                    } else {
-                        ""
-                    }
+                        } else {
+                            ""
+                        }
 
-                    // 4. Determine Raw Text: Either Native Selectable PDF Text OR On-Device OCR on Rendered Bitmap
-                    val rawText: String
-                    val engineUsed: String
-                    val confidence: Float
-                    val confidenceNote: String
+                        // 2. If PDFBox returned empty or garbled CIDs, check low-level PDF stream text operators
+                        val streamFallbackText = if (!isMeaningfulSelectableText(pdfBoxPageText) && rawPdfBytes != null) {
+                            extractSelectableTextFromRawPdfStream(rawPdfBytes, pageIndex)
+                        } else {
+                            ""
+                        }
 
-                    if (hasNativeText) {
-                        nativePagesCount++
-                        rawText = candidateNativeText
-                        engineUsed = if (pdfBoxPageText.isNotBlank()) "PDFBOX_NATIVE_TEXT" else "PDF_STREAM_PARSER"
-                        confidence = 0.99f
-                        confidenceNote = "Direct selectable PDF text extracted ($engineUsed • Page $pageNum/$totalPages)"
-                    } else {
-                        scannedOcrPagesCount++
-                        onProgress(
-                            "Running local on-device OCR on scanned page $pageNum of $totalPages…",
-                            pageNum,
-                            totalPages
+                        val candidateNativeText = when {
+                            isMeaningfulSelectableText(pdfBoxPageText) -> pdfBoxPageText
+                            isMeaningfulSelectableText(streamFallbackText) -> streamFallbackText
+                            else -> ""
+                        }
+
+                        val hasNativeText = candidateNativeText.isNotBlank()
+
+                        // 3. Determine Raw Text: Either Native Selectable PDF Text OR On-Device OCR on Rendered Bitmap
+                        val rawText: String
+                        val engineUsed: String
+                        val confidence: Float
+                        val confidenceNote: String
+                        var savedImagePath = ""
+
+                        if (hasNativeText) {
+                            nativePagesCount++
+                            rawText = candidateNativeText
+                            engineUsed = if (pdfBoxPageText.isNotBlank()) "PDFBOX_NATIVE_TEXT" else "PDF_STREAM_PARSER"
+                            confidence = 0.99f
+                            confidenceNote = "Direct selectable PDF text extracted ($engineUsed • Page $pageNum/$totalPages)"
+                        } else {
+                            scannedOcrPagesCount++
+                            onProgress(
+                                "Running local on-device OCR on scanned page $pageNum of $totalPages…",
+                                pageNum,
+                                totalPages
+                            )
+
+                            val pageBitmap: Bitmap? = if (sharedRenderer != null) {
+                                PdfProcessor.renderPageWithOpenRenderer(sharedRenderer, pageIndex, maxDimension = 1280)
+                            } else {
+                                PdfProcessor.renderPageToBitmap(pdfFile, pageIndex, maxDimension = 1280)
+                            }
+
+                            try {
+                                if (pageBitmap != null) {
+                                    // Save compact JPEG preview for scanned page
+                                    val imgFile = File(pageRendersDir, "doc_${fingerprintPrefix.take(10)}_p${pageNum}.jpg")
+                                    savedImagePath = runCatching {
+                                        FileOutputStream(imgFile).use { out ->
+                                            pageBitmap.compress(Bitmap.CompressFormat.JPEG, 72, out)
+                                        }
+                                        imgFile.absolutePath
+                                    }.getOrDefault("")
+
+                                    if (sharedDevanagariRecognizer == null) {
+                                        sharedDevanagariRecognizer = runCatching {
+                                            TextRecognition.getClient(DevanagariTextRecognizerOptions.Builder().build())
+                                        }.getOrNull()
+                                    }
+                                    if (sharedLatinRecognizer == null) {
+                                        sharedLatinRecognizer = runCatching {
+                                            TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
+                                        }.getOrNull()
+                                    }
+
+                                    val ocrOutcome = runOnDeviceMlKitOcrOnBitmap(
+                                        bitmap = pageBitmap,
+                                        devanagariRecognizer = sharedDevanagariRecognizer,
+                                        latinRecognizer = sharedLatinRecognizer
+                                    )
+
+                                    if (ocrOutcome.recognizedText.isNotBlank()) {
+                                        rawText = ocrOutcome.recognizedText
+                                        engineUsed = ocrOutcome.engineLabel
+                                        confidence = ocrOutcome.confidenceScore
+                                        confidenceNote = "On-device OCR (${ocrOutcome.engineLabel}) • Page $pageNum/$totalPages"
+                                    } else {
+                                        val anyRawStrings = pdfBoxPageText.ifBlank { streamFallbackText }.trim()
+                                        rawText = anyRawStrings.ifBlank {
+                                            "[Page $pageNum of $totalPages: Scanned image/diagram page with no machine-readable text blocks detected by local OCR]"
+                                        }
+                                        engineUsed = "LOCAL_OCR_SCAN_EMPTY"
+                                        confidence = 0.50f
+                                        confidenceNote = "Image/diagram page or unindexed scan (Page $pageNum/$totalPages)"
+                                    }
+                                } else {
+                                    val anyRawStrings = pdfBoxPageText.ifBlank { streamFallbackText }.trim()
+                                    rawText = anyRawStrings.ifBlank {
+                                        "[Page $pageNum of $totalPages: Page image could not be rendered for local OCR]"
+                                    }
+                                    engineUsed = "LOCAL_OCR_SCAN_EMPTY"
+                                    confidence = 0.50f
+                                    confidenceNote = "Unrenderable scan page (Page $pageNum/$totalPages)"
+                                }
+                            } finally {
+                                // CRITICAL: Always recycle bitmap immediately so heap never fills up on page 6+!
+                                runCatching {
+                                    if (pageBitmap != null && !pageBitmap.isRecycled) {
+                                        pageBitmap.recycle()
+                                    }
+                                }
+                            }
+                        }
+
+                        // 4. Normalize Raw OCR/Stream Text into Clean Native Text & Paragraphs
+                        val cleanText = normalizeRawOcrToCleanNativeText(rawText)
+                        val pageLang = detectLanguageFastDeterministic(cleanText)
+                        val (sectionHeading, pageParagraphs) = segmentPageTextIntoStructuredParagraphs(
+                            cleanPageText = cleanText,
+                            pageNumber = pageNum
                         )
-                        val ocrOutcome = if (pageBitmap != null) {
-                            runOnDeviceMlKitOcrOnBitmap(pageBitmap)
-                        } else {
-                            OcrBitmapOutcome("", "NO_BITMAP", 0f)
-                        }
 
-                        if (ocrOutcome.recognizedText.isNotBlank()) {
-                            rawText = ocrOutcome.recognizedText
-                            engineUsed = ocrOutcome.engineLabel
-                            confidence = ocrOutcome.confidenceScore
-                            confidenceNote = "On-device OCR (${ocrOutcome.engineLabel}) • Page $pageNum/$totalPages"
-                        } else {
-                            // Never invent fake content: accurately describe what was detected on the page
-                            val anyRawStrings = pdfBoxPageText.ifBlank { streamFallbackText }.trim()
-                            rawText = anyRawStrings.ifBlank {
-                                "[Page $pageNum of $totalPages: Scanned image/diagram page with no machine-readable text blocks detected by local OCR]"
-                            }
-                            engineUsed = "LOCAL_OCR_SCAN_EMPTY"
-                            confidence = 0.50f
-                            confidenceNote = "Image/diagram page or unindexed scan (Page $pageNum/$totalPages)"
-                        }
-                    }
-
-                    // 5. Stage 4: Normalize Raw OCR/Stream Text into Clean Native Text & Paragraphs
-                    val cleanText = normalizeRawOcrToCleanNativeText(rawText)
-                    val pageLang = detectLanguageOfflineOrMlKit(cleanText)
-                    val (sectionHeading, pageParagraphs) = segmentPageTextIntoStructuredParagraphs(
-                        cleanPageText = cleanText,
-                        pageNumber = pageNum
-                    )
-
-                    pageResults.add(
                         DeterministicPageExtractionResult(
                             pageNumber = pageNum,
                             hasNativeSelectableText = hasNativeText,
@@ -280,7 +335,32 @@ object LocalOcrAndTranslationEngine {
                             detectedSectionHeading = sectionHeading,
                             paragraphs = pageParagraphs
                         )
-                    )
+                    } catch (pageErr: Throwable) {
+                        // Never abort the whole PDF if a single page (e.g. page 6) throws an OutOfMemoryError or font/stream exception!
+                        System.gc()
+                        val fallbackMsg = "[Page $pageNum of $totalPages: Recovered from page extraction error (${pageErr.javaClass.simpleName})]"
+                        DeterministicPageExtractionResult(
+                            pageNumber = pageNum,
+                            hasNativeSelectableText = false,
+                            extractionEngineUsed = "PAGE_RECOVERY_FALLBACK",
+                            pageImagePath = "",
+                            rawOcrText = fallbackMsg,
+                            cleanNativeText = fallbackMsg,
+                            detectedLanguage = "English",
+                            confidenceScore = 0.40f,
+                            confidenceNote = "Page $pageNum recovered safely after ${pageErr.javaClass.simpleName}",
+                            detectedSectionHeading = "Page $pageNum",
+                            paragraphs = listOf(
+                                OcrParagraphDto(
+                                    pageNumber = pageNum,
+                                    blockType = "PARAGRAPH",
+                                    cleanText = fallbackMsg
+                                )
+                            )
+                        )
+                    }
+
+                    pageResults.add(pageResult)
                 }
 
                 // 6. Group all extracted pages (1..totalPages) into logical Chapters & Sections
@@ -311,10 +391,16 @@ object LocalOcrAndTranslationEngine {
                     )
                 )
             } finally {
+                runCatching { sharedDevanagariRecognizer?.close() }
+                runCatching { sharedLatinRecognizer?.close() }
+                runCatching { sharedRenderer?.close() }
+                runCatching { pfd?.close() }
                 runCatching { pdDocument?.close() }
             }
-        } catch (e: Exception) {
-            Result.failure(e)
+        } catch (t: Throwable) {
+            Result.failure(
+                if (t is Exception) t else IllegalStateException("PDF OCR extraction failed: ${t.localizedMessage ?: t.javaClass.simpleName}", t)
+            )
         }
     }
 
@@ -346,46 +432,61 @@ object LocalOcrAndTranslationEngine {
 
     /**
      * Runs Google ML Kit Bundled On-Device Text Recognition (both Devanagari/Indic and Latin recognizers)
-     * on a rendered PDF page Bitmap, sorting blocks and lines in top-to-bottom, left-to-right reading order.
+     * on a rendered PDF page Bitmap, reusing shared recognizer instances across pages so native TFLite
+     * buffers are never leaked on page 6+.
      */
-    private suspend fun runOnDeviceMlKitOcrOnBitmap(bitmap: Bitmap): OcrBitmapOutcome {
+    private suspend fun runOnDeviceMlKitOcrOnBitmap(
+        bitmap: Bitmap,
+        devanagariRecognizer: TextRecognizer? = null,
+        latinRecognizer: TextRecognizer? = null
+    ): OcrBitmapOutcome {
         return try {
             val inputImage = InputImage.fromBitmap(bitmap, 0)
 
-            // Run both Devanagari (handles Devanagari + Latin on same page) and Latin recognizers with a safe timeout
-            val devanagariRecognizer = TextRecognition.getClient(DevanagariTextRecognizerOptions.Builder().build())
-            val latinRecognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
+            val ownDevanagari = devanagariRecognizer == null
+            val ownLatin = latinRecognizer == null
+            val devClient = devanagariRecognizer
+                ?: runCatching { TextRecognition.getClient(DevanagariTextRecognizerOptions.Builder().build()) }.getOrNull()
+            val latClient = latinRecognizer
+                ?: runCatching { TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS) }.getOrNull()
 
-            val devResult: Text? = withTimeoutOrNull(12_000L) {
-                runCatching { devanagariRecognizer.process(inputImage).await() }.getOrNull()
-            }
-            val latinResult: Text? = withTimeoutOrNull(12_000L) {
-                runCatching { latinRecognizer.process(inputImage).await() }.getOrNull()
-            }
+            try {
+                val devResult: Text? = if (devClient != null) {
+                    withTimeoutOrNull(10_000L) {
+                        runCatching { devClient.process(inputImage).await() }.getOrNull()
+                    }
+                } else null
 
-            runCatching { devanagariRecognizer.close() }
-            runCatching { latinRecognizer.close() }
+                val latinResult: Text? = if (latClient != null) {
+                    withTimeoutOrNull(10_000L) {
+                        runCatching { latClient.process(inputImage).await() }.getOrNull()
+                    }
+                } else null
 
-            val devText = devResult?.let { reconstructOrderedPageTextFromMlKit(it) }.orEmpty().trim()
-            val latText = latinResult?.let { reconstructOrderedPageTextFromMlKit(it) }.orEmpty().trim()
+                val devText = devResult?.let { reconstructOrderedPageTextFromMlKit(it) }.orEmpty().trim()
+                val latText = latinResult?.let { reconstructOrderedPageTextFromMlKit(it) }.orEmpty().trim()
 
-            // Choose the recognizer output that captured more script richness / characters
-            val hasDevanagariChars = devText.any { it.code in 0x0900..0x097F }
-            val chosenText = when {
-                hasDevanagariChars && devText.length >= latText.length / 2 -> devText
-                latText.length >= devText.length -> latText
-                else -> devText
-            }
+                // Choose the recognizer output that captured more script richness / characters
+                val hasDevanagariChars = devText.any { it.code in 0x0900..0x097F }
+                val chosenText = when {
+                    hasDevanagariChars && devText.length >= latText.length / 2 -> devText
+                    latText.length >= devText.length -> latText
+                    else -> devText
+                }
 
-            val engine = if (hasDevanagariChars) "MLKIT_ON_DEVICE_DEVANAGARI_OCR" else "MLKIT_ON_DEVICE_LATIN_OCR"
-            if (chosenText.isNotBlank()) {
-                OcrBitmapOutcome(
-                    recognizedText = chosenText,
-                    engineLabel = engine,
-                    confidenceScore = 0.92f
-                )
-            } else {
-                OcrBitmapOutcome("", "MLKIT_EMPTY", 0f)
+                val engine = if (hasDevanagariChars) "MLKIT_ON_DEVICE_DEVANAGARI_OCR" else "MLKIT_ON_DEVICE_LATIN_OCR"
+                if (chosenText.isNotBlank()) {
+                    OcrBitmapOutcome(
+                        recognizedText = chosenText,
+                        engineLabel = engine,
+                        confidenceScore = 0.92f
+                    )
+                } else {
+                    OcrBitmapOutcome("", "MLKIT_EMPTY", 0f)
+                }
+            } finally {
+                if (ownDevanagari) runCatching { devClient?.close() }
+                if (ownLatin) runCatching { latClient?.close() }
             }
         } catch (_: Throwable) {
             OcrBitmapOutcome("", "MLKIT_UNAVAILABLE_IN_ENV", 0f)
@@ -628,10 +729,38 @@ object LocalOcrAndTranslationEngine {
     }
 
     /**
+     * Fast, zero-allocation Unicode script detector used inside per-page loops so we do not
+     * instantiate a new ML Kit LanguageIdentifier client on every single page.
+     */
+    fun detectLanguageFastDeterministic(sampleText: String): String {
+        val clean = sampleText.trim()
+        if (clean.isEmpty()) return "English"
+        for (ch in clean) {
+            when (ch.code) {
+                in 0x0900..0x097F -> return if (clean.contains("॥") || clean.contains("ः")) "Sanskrit" else "Hindi"
+                in 0x0A80..0x0AFF -> return "Gujarati"
+                in 0x0980..0x09FF -> return "Bengali"
+                in 0x0B80..0x0BFF -> return "Tamil"
+                in 0x0C00..0x0C7F -> return "Telugu"
+                in 0x0C80..0x0CFF -> return "Kannada"
+                in 0x0D00..0x0D7F -> return "Malayalam"
+                in 0x0A00..0x0A7F -> return "Punjabi"
+                in 0x0B00..0x0B7F -> return "Odia"
+                in 0x0600..0x06FF -> return "Arabic"
+                in 0x0400..0x04FF -> return "Russian"
+                in 0x3040..0x30FF -> return "Japanese"
+                in 0xAC00..0xD7AF -> return "Korean"
+                in 0x4E00..0x9FFF -> return "Mandarin Chinese"
+            }
+        }
+        return "English"
+    }
+
+    /**
      * Organizes all extracted pages (1..totalPages) into logical Chapters and Sections
      * so every single page of the uploaded PDF is accessible in the reader.
      */
-    private fun buildChaptersFromExtractedPages(
+    fun buildChaptersFromExtractedPages(
         docTitle: String,
         pages: List<DeterministicPageExtractionResult>
     ): List<OcrChapterDto> {

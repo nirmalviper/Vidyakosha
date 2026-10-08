@@ -118,6 +118,9 @@ import com.example.ui.theme.MyApplicationTheme
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        runCatching {
+            com.tom_roush.pdfbox.android.PDFBoxResourceLoader.init(applicationContext)
+        }
         enableEdgeToEdge()
         setContent {
             val polyglotViewModel: PolyglotViewModel = viewModel()

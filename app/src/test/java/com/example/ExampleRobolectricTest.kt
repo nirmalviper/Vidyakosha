@@ -201,6 +201,38 @@ class ExampleRobolectricTest {
         val mdBook = mdBookResult.getOrThrow()
         assertEquals(0L, mdBook.fileSizeBytes)
         assertEquals(BookRightsCategory.P2P_DERIVATIVE_OWNED, mdBook.rightsCategory)
+
+        // 8. Verify 12-Page Multi-Page PDF Extraction & OCR across Page 6+ without memory exhaustion or truncation
+        com.tom_roush.pdfbox.android.PDFBoxResourceLoader.init(context)
+        val multiPagePdfFile = java.io.File(context.cacheDir, "test_12_page_book.pdf")
+        com.tom_roush.pdfbox.pdmodel.PDDocument().use { doc ->
+            for (p in 1..12) {
+                val page = com.tom_roush.pdfbox.pdmodel.PDPage()
+                doc.addPage(page)
+                com.tom_roush.pdfbox.pdmodel.PDPageContentStream(doc, page).use { cs ->
+                    cs.beginText()
+                    cs.setFont(com.tom_roush.pdfbox.pdmodel.font.PDType1Font.HELVETICA, 12f)
+                    cs.newLineAtOffset(50f, 700f)
+                    cs.showText("Page $p of 12: Lipi Deterministic Full-Document PDF Extraction Verification.")
+                    cs.endText()
+                }
+            }
+            doc.save(multiPagePdfFile)
+        }
+        val multiPageExtraction = com.example.util.LocalOcrAndTranslationEngine.extractAllPagesFromPdfDeterministically(
+            context = context,
+            pdfFile = multiPagePdfFile,
+            fallbackTitle = "Twelve Page Test Treatise",
+            fingerprintPrefix = "test12p"
+        )
+        assertTrue("12-page PDF extraction including page 6+ must succeed", multiPageExtraction.isSuccess)
+        val extracted12 = multiPageExtraction.getOrThrow()
+        assertEquals("All 12 pages must be extracted without stopping at page 6", 12, extracted12.totalPages)
+        assertEquals(12, extracted12.pages.size)
+        assertTrue("Page 6 must be extracted cleanly", extracted12.pages[5].cleanNativeText.contains("Page 6 of 12"))
+        assertTrue("Page 12 must be extracted cleanly", extracted12.pages[11].cleanNativeText.contains("Page 12 of 12"))
+        multiPagePdfFile.delete()
+        Unit
     }
 
     @Test

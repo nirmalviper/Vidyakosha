@@ -1480,6 +1480,7 @@ class PolyglotRepository(
                 // Save EVERY extracted page (1..totalPages) from our deterministic PDFBox + On-Device ML Kit OCR pipeline!
                 val updatedPages = mutableListOf<com.example.util.DeterministicPageExtractionResult>()
 
+                var aiUpdatedAnyPage = false
                 for (pageRes in extracted.extractedPages) {
                     // Only call external AI Vision OCR if local OCR found 0 text on a difficult scanned page AND user configured an AI key
                     if (pageRes.extractionEngineUsed == "LOCAL_OCR_SCAN_EMPTY" &&
@@ -1492,11 +1493,20 @@ class PolyglotRepository(
                             pageRes.pageNumber,
                             extracted.unitCount
                         )
-                        val bmpBase64 = PdfProcessor.renderPageToBitmap(
+                        val renderedBmp = PdfProcessor.renderPageToBitmap(
                             scratchPdf,
                             pageRes.pageNumber - 1,
-                            maxDimension = 1350
-                        )?.let { PdfProcessor.bitmapToBase64(it, quality = 80) }
+                            maxDimension = 1200
+                        )
+                        val bmpBase64 = try {
+                            renderedBmp?.let { PdfProcessor.bitmapToBase64(it, quality = 75) }
+                        } finally {
+                            runCatching {
+                                if (renderedBmp != null && !renderedBmp.isRecycled) {
+                                    renderedBmp.recycle()
+                                }
+                            }
+                        }
 
                         val aiPageDto = if (bmpBase64 != null) {
                             MultiProviderAiGateway.performStructuredOcrOnPages(
@@ -1509,6 +1519,7 @@ class PolyglotRepository(
 
                         val aiParagraphs = aiPageDto?.chapters?.flatMap { it.sections }?.flatMap { it.paragraphs }.orEmpty()
                         if (aiParagraphs.isNotEmpty()) {
+                            aiUpdatedAnyPage = true
                             val joinedClean = aiParagraphs.joinToString("\n\n") { it.cleanText }
                             updatedPages.add(
                                 pageRes.copy(
@@ -1544,7 +1555,16 @@ class PolyglotRepository(
                         )
                     )
                 }
-                allExtractedChapters.addAll(extracted.preExtractedChapters)
+                if (aiUpdatedAnyPage) {
+                    allExtractedChapters.addAll(
+                        com.example.util.LocalOcrAndTranslationEngine.buildChaptersFromExtractedPages(
+                            extracted.title,
+                            updatedPages
+                        )
+                    )
+                } else {
+                    allExtractedChapters.addAll(extracted.preExtractedChapters)
+                }
             } else {
                 // Direct P2P Extraction for EPUB, Markdown, Plain Text, HTML, P2P JSON
                 allExtractedChapters.addAll(extracted.preExtractedChapters)
@@ -1571,7 +1591,10 @@ class PolyglotRepository(
             }
 
             if (pageEntities.isNotEmpty()) {
-                dao.insertBookPages(pageEntities)
+                // Insert in small batches of 4 pages to prevent SQLiteBlobTooBig / transaction buffer overflow on large PDFs
+                pageEntities.chunked(4).forEach { chunk ->
+                    dao.insertBookPages(chunk)
+                }
             }
 
             var chapterOrder = 1
