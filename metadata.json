@@ -1,0 +1,6 @@
+{
+  "name": "VidyaKosha",
+  "description": "Decentralized peer-to-peer knowledge extraction & multilingual translation studio. Convert PDF, EPUB, TXT, Markdown, and HTML into structured OCR segments and read across 100+ languages while never hosting original restricted documents.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
