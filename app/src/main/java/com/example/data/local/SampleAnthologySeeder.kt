@@ -22,8 +22,9 @@ object SampleAnthologySeeder {
     private const val BOOK4_FINGERPRINT = "polyglot_restricted_book_navya_nyaya_v4"
     private const val BOOK5_FINGERPRINT = "polyglot_publisher_book_kavyashastra_v4"
 
-    const val DEFAULT_SUPERADMIN_EMAIL = "superadmin@vidyakosha.org"
-    const val ALTERNATE_SUPERADMIN_EMAIL = "admin@vidyakosha.org"
+    const val DEFAULT_SUPERADMIN_EMAIL = "superadmin@lipi.org"
+    const val ALTERNATE_SUPERADMIN_EMAIL = "admin@lipi.org"
+    const val LEGACY_SUPERADMIN_EMAIL = "superadmin@vidyakosha.org"
     const val DEFAULT_SUPERADMIN_PASSWORD = "test1234"
 
     suspend fun ensurePublicCatalogSeeded(
@@ -73,10 +74,10 @@ object SampleAnthologySeeder {
                 isSampleBook = true,
                 isPaid = false,
                 priceDisplay = "Free Public Sample",
-                publisherName = "Polyglot Open Classics",
+                publisherName = "Lipi Open Classics",
                 currentOcrVersion = 1,
                 ocrStatus = "COMPLETED",
-                ocrProviderUsed = "Polyglot Archival Vision OCR v1",
+                ocrProviderUsed = "Lipi Archival Vision OCR v1",
                 ocrProgressPages = 3,
                 totalChapters = 3,
                 totalSections = 4,
@@ -1016,7 +1017,7 @@ object SampleAnthologySeeder {
                 ),
                 CommercialPlanEntity(
                     planCode = SubscriptionTier.READER,
-                    name = "VidyaKosha Reader Plan",
+                    name = "Lipi Reader Plan",
                     description = "Unlocks PAID_USERS verified translations, offline reading packages, enhanced Indian TTS, and Ask This Book grounded passage citations.",
                     isEnabled = true,
                     monthlyPriceAmount = 12.0,
@@ -1135,7 +1136,7 @@ object SampleAnthologySeeder {
             defaultMeta.forEach { dao.insertPlatformMetadata(it) }
         }
 
-        // 3. Seed Protected Superadmin Accounts (superadmin@vidyakosha.org and admin@vidyakosha.org) with default password test1234
+        // 3. Seed Protected Superadmin Accounts (superadmin@lipi.org, admin@lipi.org, and legacy aliases) with default password test1234
         val existingSuperadmin = dao.getUserByEmail(DEFAULT_SUPERADMIN_EMAIL)
         if (existingSuperadmin == null) {
             val salt = SecurityVault.generateSalt()
@@ -1143,7 +1144,7 @@ object SampleAnthologySeeder {
             val superadminId = dao.insertUser(
                 UserEntity(
                     email = DEFAULT_SUPERADMIN_EMAIL,
-                    displayName = "VidyaKosha Superadmin",
+                    displayName = "Lipi Superadmin",
                     passwordHash = hash,
                     passwordSalt = salt,
                     role = UserRole.SUPERADMIN,
@@ -1151,7 +1152,7 @@ object SampleAnthologySeeder {
                     preferredLanguage = "Gujarati",
                     topThreeLanguagesCsv = "Gujarati,Hindi,English",
                     activeTierCode = SubscriptionTier.PUBLISHER_INSTITUTION,
-                    institutionCode = "INST_VIDYAKOSHA_FOUNDATION",
+                    institutionCode = "INST_LIPI_FOUNDATION",
                     hasAcceptedContributorLicense = true,
                     createdAt = now - 86_400_000L * 14,
                     lastLoginAt = now
@@ -1188,7 +1189,7 @@ object SampleAnthologySeeder {
                     adminRole = UserRole.SUPERADMIN,
                     action = "PLATFORM_SUPERADMIN_INITIALIZED",
                     entityAffected = "SYSTEM_CONFIG",
-                    entityId = "VIDYAKOSHA_V6",
+                    entityId = "LIPI_V6",
                     previousValue = "NONE",
                     newValue = "4 Commercial Plans, 25 Metadata Keys, Superadmin RBAC Active",
                     reasonOrNote = "Automated database bootstrap of commercial plans, metadata registry, and Superadmin RBAC",
@@ -1212,7 +1213,7 @@ object SampleAnthologySeeder {
             }
         }
 
-        // Also seed admin@vidyakosha.org with test1234 for convenience on first deployment
+        // Also seed admin@lipi.org with test1234 for convenience on first deployment
         val existingAltAdmin = dao.getUserByEmail(ALTERNATE_SUPERADMIN_EMAIL)
         if (existingAltAdmin == null) {
             val altSalt = SecurityVault.generateSalt()
@@ -1220,7 +1221,7 @@ object SampleAnthologySeeder {
             val altAdminId = dao.insertUser(
                 UserEntity(
                     email = ALTERNATE_SUPERADMIN_EMAIL,
-                    displayName = "Platform Admin (Default)",
+                    displayName = "Lipi Platform Admin",
                     passwordHash = altHash,
                     passwordSalt = altSalt,
                     role = UserRole.SUPERADMIN,
@@ -1228,7 +1229,7 @@ object SampleAnthologySeeder {
                     preferredLanguage = "Gujarati",
                     topThreeLanguagesCsv = "Gujarati,Hindi,English",
                     activeTierCode = SubscriptionTier.PUBLISHER_INSTITUTION,
-                    institutionCode = "INST_VIDYAKOSHA_FOUNDATION",
+                    institutionCode = "INST_LIPI_FOUNDATION",
                     hasAcceptedContributorLicense = true,
                     createdAt = now - 86_400_000L * 14,
                     lastLoginAt = now
@@ -1243,7 +1244,31 @@ object SampleAnthologySeeder {
                     status = "ACTIVE",
                     grantedByAdminId = altAdminId,
                     grantedByAdminName = "System Bootstrap",
-                    reasonOrNote = "Default admin@vidyakosha.org entitlement"
+                    reasonOrNote = "Default admin@lipi.org entitlement"
+                )
+            )
+        }
+
+        // Seed legacy alias superadmin@vidyakosha.org -> Lipi Superadmin so existing scripts/tests continue to work seamlessly
+        val existingLegacyAdmin = dao.getUserByEmail(LEGACY_SUPERADMIN_EMAIL)
+        if (existingLegacyAdmin == null) {
+            val legSalt = SecurityVault.generateSalt()
+            val legHash = SecurityVault.hashPassword(DEFAULT_SUPERADMIN_PASSWORD, legSalt)
+            dao.insertUser(
+                UserEntity(
+                    email = LEGACY_SUPERADMIN_EMAIL,
+                    displayName = "Lipi Superadmin",
+                    passwordHash = legHash,
+                    passwordSalt = legSalt,
+                    role = UserRole.SUPERADMIN,
+                    accountStatus = AccountStatus.ACTIVE,
+                    preferredLanguage = "Gujarati",
+                    topThreeLanguagesCsv = "Gujarati,Hindi,English",
+                    activeTierCode = SubscriptionTier.PUBLISHER_INSTITUTION,
+                    institutionCode = "INST_LIPI_FOUNDATION",
+                    hasAcceptedContributorLicense = true,
+                    createdAt = now - 86_400_000L * 14,
+                    lastLoginAt = now
                 )
             )
         }

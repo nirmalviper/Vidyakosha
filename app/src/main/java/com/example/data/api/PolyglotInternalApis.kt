@@ -390,10 +390,10 @@ class AccessApi(private val dao: PolyglotDao) {
                 }
             }
             BookRightsCategory.P2P_DERIVATIVE_OWNED -> {
-                // Zero-Host P2P Model: Original file is never hosted; VidyaKosha owns the converted OCR + Translation derivative!
+                // Zero-Host P2P Model: Original file is never hosted; Lipi owns the converted OCR + Translation derivative!
                 Triple(
                     TranslationAccessPolicy.PUBLIC,
-                    "VIDYAKOSHA_OWNED_OCR_AND_TRANSLATION_DERIVATIVE",
+                    "LIPI_OWNED_OCR_AND_TRANSLATION_DERIVATIVE",
                     true
                 )
             }
@@ -421,7 +421,7 @@ class AccessApi(private val dao: PolyglotDao) {
             bookTitle = book.title,
             bookRightsCategory = book.rightsCategory,
             resultingTranslationAccessPolicy = accessPolicy,
-            agreementTextShown = "Zero-Host P2P Derivative Licence: The original file is never hosted on VidyaKosha servers. By converting or translating this work, you agree that VidyaKosha owns and permanently retains the structured OCR and translation derivatives (${book.rightsCategory} → $accessPolicy)."
+            agreementTextShown = "Zero-Host P2P Derivative Licence: The original file is never hosted on Lipi servers. By converting or translating this work, you agree that Lipi owns and permanently retains the structured OCR and translation derivatives (${book.rightsCategory} → $accessPolicy)."
         )
         val id = dao.insertContributorConsent(consent)
         val user = dao.getUserById(userId)
@@ -685,7 +685,7 @@ class TranslationApi(
                 sourceContentVersion = paragraph.ocrVersion,
                 sourceContentHash = currentHash,
                 createdByUserId = userId.takeIf { it > 0L },
-                translatorDisplayName = "Polyglot Translation Memory",
+                translatorDisplayName = "Lipi Translation Memory",
                 reviewStatus = tmMatch.reviewStatus,
                 accessPolicy = tmMatch.accessPolicy,
                 commercialRightsStatus = "TM_SHARED_REUSE",

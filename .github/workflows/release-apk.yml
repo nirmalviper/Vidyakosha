@@ -1,7 +1,10 @@
-name: Build & Release Android APK
+name: Publish & Release Android APK
 
 on:
   push:
+    branches:
+      - main
+      - master
     tags:
       - 'v*'
   workflow_dispatch:
@@ -15,50 +18,50 @@ permissions:
   contents: write
 
 jobs:
-  build-and-release:
+  publish-apk-release:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up JDK 17
-        uses: actions/setup-java@v4
-        with:
-          distribution: 'temurin'
-          java-version: '17'
-
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Setup Gradle
-        uses: gradle/actions/setup-gradle@v3
-        with:
-          gradle-version: '8.7'
-
-      - name: Build Debug & Release APK
+      - name: Verify or Prepare APK Release Package
         run: |
-          gradle assembleDebug
           mkdir -p releases
-          cp app/build/outputs/apk/debug/app-debug.apk releases/vidyakosha-latest.apk
-          sha256sum releases/vidyakosha-latest.apk > releases/SHA256SUMS.txt
+          if [ -f "releases/lipi-v1.0.0.apk" ]; then
+            echo "Found pre-built signed APK in releases/lipi-v1.0.0.apk"
+            cp releases/lipi-v1.0.0.apk releases/lipi-latest.apk
+            sha256sum releases/lipi-v1.0.0.apk releases/lipi-latest.apk > releases/SHA256SUMS.txt
+          elif [ -f "releases/vidyakosha-v1.0.0.apk" ]; then
+            cp releases/vidyakosha-v1.0.0.apk releases/lipi-v1.0.0.apk
+            cp releases/vidyakosha-v1.0.0.apk releases/lipi-latest.apk
+            sha256sum releases/lipi-v1.0.0.apk releases/lipi-latest.apk > releases/SHA256SUMS.txt
+          else
+            echo "APK not found in releases/, check repository files."
+            exit 1
+          fi
 
-      - name: Upload APK Artifact
+      - name: Upload APK to GitHub Actions Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: vidyakosha-apk
+          name: lipi-android-apk
           path: |
-            releases/vidyakosha-latest.apk
+            releases/lipi-v1.0.0.apk
+            releases/lipi-latest.apk
             releases/SHA256SUMS.txt
+            releases/release-notes-v1.0.0.md
 
-      - name: Create GitHub Release
-        if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+      - name: Publish to GitHub Releases Tab (v1.0.0)
         uses: softprops/action-gh-release@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tag_name: ${{ github.ref_name || inputs.release_tag || 'v1.0.0' }}
-          name: "VidyaKosha Knowledge Commons ${{ github.ref_name || inputs.release_tag || 'v1.0.0' }}"
+          tag_name: ${{ inputs.release_tag || 'v1.0.0' }}
+          name: "Lipi Knowledge Commons ${{ inputs.release_tag || 'v1.0.0' }} (Android APK)"
           body_path: releases/release-notes-v1.0.0.md
           files: |
-            releases/vidyakosha-latest.apk
-            releases/vidyakosha-v1.0.0.apk
+            releases/lipi-v1.0.0.apk
+            releases/lipi-latest.apk
             releases/SHA256SUMS.txt
-          generate_release_notes: true
+          draft: false
+          prerelease: false
+          make_latest: true

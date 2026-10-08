@@ -7,6 +7,12 @@ import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
 
+enum class AppThemeMode(val label: String) {
+    WHITE("White"),
+    SEPIA("Sepia"),
+    DARK("Dark")
+}
+
 private val DarkColorScheme = darkColorScheme(
     primary = EditorialPrimaryDark,
     onPrimary = EditorialOnPrimaryDark,
@@ -39,7 +45,7 @@ private val DarkColorScheme = darkColorScheme(
     onErrorContainer = Color(0xFFF9DEDC)
 )
 
-private val LightColorScheme = lightColorScheme(
+private val WhiteColorScheme = lightColorScheme(
     primary = EditorialPrimaryLight,
     onPrimary = EditorialOnPrimaryLight,
     primaryContainer = EditorialPrimaryContainerLight,
@@ -71,12 +77,49 @@ private val LightColorScheme = lightColorScheme(
     onErrorContainer = Color(0xFF7F1D1D)
 )
 
+private val SepiaColorScheme = lightColorScheme(
+    primary = EditorialPrimarySepia,
+    onPrimary = EditorialOnPrimarySepia,
+    primaryContainer = EditorialPrimaryContainerSepia,
+    onPrimaryContainer = EditorialOnPrimaryContainerSepia,
+    secondary = EditorialSecondarySepia,
+    onSecondary = EditorialOnSecondarySepia,
+    secondaryContainer = EditorialSecondaryContainerSepia,
+    onSecondaryContainer = EditorialOnSecondaryContainerSepia,
+    tertiary = EditorialTertiarySepia,
+    onTertiary = EditorialOnTertiarySepia,
+    tertiaryContainer = EditorialTertiaryContainerSepia,
+    onTertiaryContainer = EditorialOnTertiaryContainerSepia,
+    background = EditorialSepiaBg,
+    onBackground = SepiaInkPrimary,
+    surface = EditorialSurfaceSepia,
+    onSurface = SepiaInkPrimary,
+    surfaceVariant = EditorialSurfaceLowSepia,
+    onSurfaceVariant = SepiaSecondaryText,
+    surfaceContainerLowest = EditorialSurfaceSepia,
+    surfaceContainerLow = EditorialSurfaceLowSepia,
+    surfaceContainer = EditorialSurfaceContainerSepia,
+    surfaceContainerHigh = EditorialSurfaceHighSepia,
+    surfaceContainerHighest = EditorialSurfaceHighestSepia,
+    outline = EditorialOutlineSepia,
+    outlineVariant = EditorialOutlineVariantSepia,
+    error = Color(0xFF8C1D18),
+    onError = Color.White,
+    errorContainer = Color(0xFFF9DEDC),
+    onErrorContainer = Color(0xFF410E0B)
+)
+
 @Composable
 fun MyApplicationTheme(
+    themeMode: AppThemeMode = AppThemeMode.WHITE,
     darkTheme: Boolean = isSystemInDarkTheme(),
     content: @Composable () -> Unit,
 ) {
-    val colorScheme = if (darkTheme) DarkColorScheme else LightColorScheme
+    val colorScheme = when (themeMode) {
+        AppThemeMode.DARK -> DarkColorScheme
+        AppThemeMode.SEPIA -> SepiaColorScheme
+        AppThemeMode.WHITE -> WhiteColorScheme
+    }
 
     MaterialTheme(
         colorScheme = colorScheme,

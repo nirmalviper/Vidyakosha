@@ -12,6 +12,7 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -32,6 +33,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Login
 import androidx.compose.material.icons.automirrored.filled.MenuBook
+import androidx.compose.material.icons.automirrored.outlined.MenuBook
 import androidx.compose.material.icons.filled.AccountCircle
 import androidx.compose.material.icons.filled.AdminPanelSettings
 import androidx.compose.material.icons.filled.Close
@@ -43,13 +45,20 @@ import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Key
 import androidx.compose.material.icons.filled.UploadFile
 import androidx.compose.material.icons.filled.WorkspacePremium
+import androidx.compose.material.icons.outlined.AccountCircle
+import androidx.compose.material.icons.outlined.Explore
+import androidx.compose.material.icons.outlined.Home
+import androidx.compose.material.icons.outlined.Hub
+import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.NavigationRail
 import androidx.compose.material3.NavigationRailItem
 import androidx.compose.material3.OutlinedButton
@@ -69,7 +78,15 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.clipPath
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -94,6 +111,7 @@ import com.example.ui.components.SuperadminDashboardScreen
 import com.example.ui.components.UserAiSettingsScreen
 import com.example.ui.components.UserHomeDashboardScreen
 import com.example.data.local.UserRole
+import com.example.ui.theme.AppThemeMode
 import com.example.ui.theme.LoraSerif
 import com.example.ui.theme.MyApplicationTheme
 
@@ -102,12 +120,14 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         setContent {
-            MyApplicationTheme {
-                val polyglotViewModel: PolyglotViewModel = viewModel()
-                val uiState by polyglotViewModel.uiState.collectAsStateWithLifecycle()
+            val polyglotViewModel: PolyglotViewModel = viewModel()
+            val uiState by polyglotViewModel.uiState.collectAsStateWithLifecycle()
+            val appThemeMode by polyglotViewModel.appThemeMode.collectAsStateWithLifecycle()
 
+            MyApplicationTheme(themeMode = appThemeMode) {
                 PolyglotPlatformApp(
                     uiState = uiState,
+                    appThemeMode = appThemeMode,
                     viewModel = polyglotViewModel
                 )
             }
@@ -119,6 +139,7 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun PolyglotPlatformApp(
     uiState: PolyglotUiState,
+    appThemeMode: AppThemeMode,
     viewModel: PolyglotViewModel
 ) {
     val multiFormatMimeTypes = arrayOf(
@@ -172,127 +193,204 @@ fun PolyglotPlatformApp(
                     enter = fadeIn(),
                     exit = fadeOut()
                 ) {
-                    Column {
-                        TopAppBar(
-                            colors = TopAppBarDefaults.topAppBarColors(
-                                containerColor = MaterialTheme.colorScheme.background
-                            ),
-                            title = {
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(10.dp)
-                                ) {
-                                    Text(
-                                        text = if (uiState.topDestination == TopLevelDestination.START_READING && uiState.activeBook != null) {
-                                            uiState.activeBook.title
-                                        } else {
-                                            "VidyaKosha"
-                                        },
-                                        fontFamily = LoraSerif,
-                                        fontWeight = FontWeight.SemiBold,
-                                        fontSize = 19.sp,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis
-                                    )
-                                }
-                            },
-                            actions = {
-                                if (uiState.topDestination == TopLevelDestination.START_READING &&
-                                    uiState.workspaceTab == ReaderWorkspaceTab.READER
-                                ) {
-                                    TextButton(
-                                        onClick = { isFocusModeEnabled = true },
-                                        modifier = Modifier
-                                            .minimumInteractiveComponentSize()
-                                            .testTag("top_bar_enter_focus_mode_button")
+                    Surface(
+                        color = MaterialTheme.colorScheme.background,
+                        tonalElevation = 1.dp
+                    ) {
+                        Column {
+                            TopAppBar(
+                                colors = TopAppBarDefaults.topAppBarColors(
+                                    containerColor = MaterialTheme.colorScheme.background
+                                ),
+                                title = {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(10.dp)
                                     ) {
-                                        Icon(
-                                            Icons.Default.Fullscreen,
-                                            contentDescription = "Focus Mode",
-                                            modifier = Modifier.size(18.dp)
+                                        LipiSplitDotMark(
+                                            modifier = Modifier
+                                                .size(26.dp)
+                                                .testTag("lipi_abstract_logo_mark")
                                         )
-                                        Spacer(modifier = Modifier.width(4.dp))
-                                        Text("Focus", style = MaterialTheme.typography.labelMedium)
-                                    }
-                                }
-
-                                IconButton(
-                                    onClick = { pdfPickerLauncher.launch(multiFormatMimeTypes) },
-                                    modifier = Modifier
-                                        .minimumInteractiveComponentSize()
-                                        .testTag("top_bar_upload_pdf_button")
-                                ) {
-                                    Icon(
-                                        Icons.Default.UploadFile,
-                                        contentDescription = "Extract PDF / EPUB / Text (Zero-Host P2P)",
-                                        modifier = Modifier.size(20.dp)
-                                    )
-                                }
-
-                                IconButton(
-                                    onClick = { viewModel.openPlansDialog() },
-                                    modifier = Modifier
-                                        .minimumInteractiveComponentSize()
-                                        .testTag("top_bar_plans_button")
-                                ) {
-                                    Icon(
-                                        Icons.Default.WorkspacePremium,
-                                        contentDescription = "Plans & Access Rights",
-                                        modifier = Modifier.size(20.dp)
-                                    )
-                                }
-
-                                if (isSuperadmin) {
-                                    IconButton(
-                                        onClick = { viewModel.navigateToDestination(TopLevelDestination.SUPERADMIN_DASHBOARD) },
-                                        modifier = Modifier
-                                            .minimumInteractiveComponentSize()
-                                            .testTag("top_bar_superadmin_button")
-                                    ) {
-                                        Icon(
-                                            Icons.Default.AdminPanelSettings,
-                                            contentDescription = "Superadmin Backend Console",
-                                            tint = MaterialTheme.colorScheme.primary,
-                                            modifier = Modifier.size(20.dp)
+                                        Text(
+                                            text = if (uiState.topDestination == TopLevelDestination.START_READING && uiState.activeBook != null) {
+                                                uiState.activeBook.title
+                                            } else {
+                                                "Lipi"
+                                            },
+                                            fontFamily = LoraSerif,
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = 20.sp,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
                                         )
                                     }
-                                }
+                                },
+                                actions = {
+                                    // Global Theme Switcher (White / Sepia / Dark) available across the entire app
+                                    Surface(
+                                        shape = RoundedCornerShape(16.dp),
+                                        color = MaterialTheme.colorScheme.surfaceContainerLow,
+                                        border = BorderStroke(0.5.dp, MaterialTheme.colorScheme.outlineVariant),
+                                        modifier = Modifier
+                                            .padding(end = 4.dp)
+                                            .clip(RoundedCornerShape(16.dp))
+                                            .clickable { viewModel.cycleAppThemeMode() }
+                                            .testTag("global_theme_switcher_button")
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp),
+                                            horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            AppThemeMode.entries.forEach { mode ->
+                                                val isSelected = appThemeMode == mode
+                                                Surface(
+                                                    shape = RoundedCornerShape(10.dp),
+                                                    color = if (isSelected) {
+                                                        MaterialTheme.colorScheme.primaryContainer
+                                                    } else {
+                                                        Color.Transparent
+                                                    },
+                                                    modifier = Modifier
+                                                        .clip(RoundedCornerShape(10.dp))
+                                                        .clickable { viewModel.setAppThemeMode(mode) }
+                                                        .testTag("theme_mode_${mode.name.lowercase()}")
+                                                ) {
+                                                    Text(
+                                                        text = mode.label,
+                                                        style = MaterialTheme.typography.labelSmall,
+                                                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                                                        color = if (isSelected) {
+                                                            MaterialTheme.colorScheme.onPrimaryContainer
+                                                        } else {
+                                                            MaterialTheme.colorScheme.onSurfaceVariant
+                                                        },
+                                                        maxLines = 1,
+                                                        softWrap = false,
+                                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                                    )
+                                                }
+                                            }
+                                        }
+                                    }
 
-                                if (isLoggedIn) {
-                                    IconButton(
-                                        onClick = { viewModel.navigateToDestination(TopLevelDestination.AI_SETTINGS) },
-                                        modifier = Modifier
-                                            .minimumInteractiveComponentSize()
-                                            .testTag("top_bar_ai_settings_button")
-                                    ) {
-                                        Icon(
-                                            Icons.Default.Key,
-                                            contentDescription = "AI Credentials & Account",
-                                            modifier = Modifier.size(20.dp)
-                                        )
-                                    }
-                                } else {
-                                    OutlinedButton(
-                                        onClick = { viewModel.openAuthPortal(signUpMode = false) },
-                                        shape = RoundedCornerShape(8.dp),
-                                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
-                                        modifier = Modifier
-                                            .padding(end = 8.dp)
-                                            .minimumInteractiveComponentSize()
-                                            .testTag("top_bar_login_button")
-                                    ) {
-                                        Icon(
-                                            Icons.AutoMirrored.Filled.Login,
-                                            contentDescription = null,
-                                            modifier = Modifier.size(15.dp)
-                                        )
-                                        Spacer(modifier = Modifier.width(6.dp))
-                                        Text("Sign In", style = MaterialTheme.typography.labelMedium)
+                                    if (uiState.topDestination == TopLevelDestination.START_READING) {
+                                        // Compact Workspace Segmented Pills directly in the Reader Top Bar
+                                        Row(
+                                            modifier = Modifier.padding(end = 4.dp),
+                                            horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            ReaderModePill(
+                                                label = "Read",
+                                                selected = uiState.workspaceTab == ReaderWorkspaceTab.READER,
+                                                onClick = { viewModel.setWorkspaceTab(ReaderWorkspaceTab.READER) },
+                                                modifier = Modifier.testTag("workspace_tab_reader")
+                                            )
+                                            ReaderModePill(
+                                                label = "Search",
+                                                selected = uiState.workspaceTab == ReaderWorkspaceTab.SEARCH_AND_BOOKMARKS,
+                                                onClick = { viewModel.setWorkspaceTab(ReaderWorkspaceTab.SEARCH_AND_BOOKMARKS) },
+                                                modifier = Modifier.testTag("workspace_tab_search")
+                                            )
+                                            ReaderModePill(
+                                                label = "Ask",
+                                                selected = uiState.workspaceTab == ReaderWorkspaceTab.ASK_BOOK,
+                                                onClick = { viewModel.setWorkspaceTab(ReaderWorkspaceTab.ASK_BOOK) },
+                                                modifier = Modifier.testTag("workspace_tab_ask_book")
+                                            )
+                                        }
+
+                                        if (uiState.workspaceTab == ReaderWorkspaceTab.READER) {
+                                            IconButton(
+                                                onClick = { isFocusModeEnabled = true },
+                                                modifier = Modifier
+                                                    .minimumInteractiveComponentSize()
+                                                    .testTag("top_bar_enter_focus_mode_button")
+                                            ) {
+                                                Icon(
+                                                    Icons.Default.Fullscreen,
+                                                    contentDescription = "Focus Mode",
+                                                    modifier = Modifier.size(20.dp)
+                                                )
+                                            }
+                                        }
+                                    } else {
+                                        // Upload/Import is strictly only allowed when logged in
+                                        if (isLoggedIn) {
+                                            FilledTonalButton(
+                                                onClick = { pdfPickerLauncher.launch(multiFormatMimeTypes) },
+                                                shape = RoundedCornerShape(20.dp),
+                                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                                                modifier = Modifier
+                                                    .minimumInteractiveComponentSize()
+                                                    .testTag("top_bar_upload_pdf_button")
+                                            ) {
+                                                Icon(
+                                                    Icons.Default.UploadFile,
+                                                    contentDescription = "Import PDF or EPUB",
+                                                    modifier = Modifier.size(16.dp)
+                                                )
+                                                Spacer(modifier = Modifier.width(6.dp))
+                                                Text("Import", style = MaterialTheme.typography.labelMedium, maxLines = 1, softWrap = false)
+                                            }
+                                        }
+
+                                        IconButton(
+                                            onClick = { viewModel.openPlansDialog() },
+                                            modifier = Modifier
+                                                .minimumInteractiveComponentSize()
+                                                .testTag("top_bar_plans_button")
+                                        ) {
+                                            Icon(
+                                                Icons.Default.WorkspacePremium,
+                                                contentDescription = "Plans & Access Rights",
+                                                tint = MaterialTheme.colorScheme.primary,
+                                                modifier = Modifier.size(20.dp)
+                                            )
+                                        }
+
+                                        if (isSuperadmin) {
+                                            IconButton(
+                                                onClick = { viewModel.navigateToDestination(TopLevelDestination.SUPERADMIN_DASHBOARD) },
+                                                modifier = Modifier
+                                                    .minimumInteractiveComponentSize()
+                                                    .testTag("top_bar_superadmin_button")
+                                            ) {
+                                                Icon(
+                                                    Icons.Default.AdminPanelSettings,
+                                                    contentDescription = "Superadmin Backend Console",
+                                                    tint = MaterialTheme.colorScheme.primary,
+                                                    modifier = Modifier.size(20.dp)
+                                                )
+                                            }
+                                        }
+
+                                        if (!isLoggedIn) {
+                                            OutlinedButton(
+                                                onClick = { viewModel.openAuthPortal(signUpMode = false) },
+                                                shape = RoundedCornerShape(20.dp),
+                                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                                                modifier = Modifier
+                                                    .padding(end = 8.dp)
+                                                    .minimumInteractiveComponentSize()
+                                                    .testTag("top_bar_login_button")
+                                            ) {
+                                                Icon(
+                                                    Icons.AutoMirrored.Filled.Login,
+                                                    contentDescription = null,
+                                                    modifier = Modifier.size(15.dp)
+                                                )
+                                                Spacer(modifier = Modifier.width(5.dp))
+                                                Text("Sign In", style = MaterialTheme.typography.labelMedium, maxLines = 1, softWrap = false)
+                                            }
+                                        }
                                     }
                                 }
-                            }
-                        )
-                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                            )
+                            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f))
+                        }
                     }
                 }
             },
@@ -303,56 +401,101 @@ fun PolyglotPlatformApp(
                     exit = fadeOut()
                 ) {
                     Column {
-                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f))
                         NavigationBar(
-                            containerColor = MaterialTheme.colorScheme.background,
-                            tonalElevation = 0.dp
+                            containerColor = MaterialTheme.colorScheme.surface,
+                            tonalElevation = 2.dp
                         ) {
+                            val navItemColors = NavigationBarItemDefaults.colors(
+                                selectedIconColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                                selectedTextColor = MaterialTheme.colorScheme.primary,
+                                indicatorColor = MaterialTheme.colorScheme.primaryContainer,
+                                unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                                unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+
                             if (isLoggedIn) {
+                                val selected = uiState.topDestination == TopLevelDestination.MY_HOME
                                 NavigationBarItem(
-                                    selected = uiState.topDestination == TopLevelDestination.MY_HOME,
+                                    selected = selected,
                                     onClick = { viewModel.navigateToDestination(TopLevelDestination.MY_HOME) },
-                                    icon = { Icon(Icons.Default.Home, contentDescription = "Home") },
-                                    label = { Text("Home") },
+                                    icon = {
+                                        Icon(
+                                            if (selected) Icons.Filled.Home else Icons.Outlined.Home,
+                                            contentDescription = "Home"
+                                        )
+                                    },
+                                    label = { Text("Home", maxLines = 1) },
+                                    colors = navItemColors,
                                     modifier = Modifier.testTag("bottom_nav_my_home")
                                 )
                             } else {
+                                val selected = uiState.topDestination == TopLevelDestination.HOW_IT_WORKS
                                 NavigationBarItem(
-                                    selected = uiState.topDestination == TopLevelDestination.HOW_IT_WORKS,
+                                    selected = selected,
                                     onClick = { viewModel.navigateToDestination(TopLevelDestination.HOW_IT_WORKS) },
-                                    icon = { Icon(Icons.Default.Info, contentDescription = "Overview") },
-                                    label = { Text("Overview") },
+                                    icon = {
+                                        Icon(
+                                            if (selected) Icons.Filled.Info else Icons.Outlined.Info,
+                                            contentDescription = "Discover"
+                                        )
+                                    },
+                                    label = { Text("Discover", maxLines = 1) },
+                                    colors = navItemColors,
                                     modifier = Modifier.testTag("bottom_nav_how_it_works")
                                 )
                             }
 
+                            val isLibrarySelected = uiState.topDestination == TopLevelDestination.DIRECTORY
                             NavigationBarItem(
-                                selected = uiState.topDestination == TopLevelDestination.DIRECTORY,
+                                selected = isLibrarySelected,
                                 onClick = { viewModel.navigateToDestination(TopLevelDestination.DIRECTORY) },
-                                icon = { Icon(Icons.Default.Explore, contentDescription = "Catalogue") },
-                                label = { Text("Catalogue") },
+                                icon = {
+                                    Icon(
+                                        if (isLibrarySelected) Icons.Filled.Explore else Icons.Outlined.Explore,
+                                        contentDescription = "Library"
+                                    )
+                                },
+                                label = { Text("Library", maxLines = 1) },
+                                colors = navItemColors,
                                 modifier = Modifier.testTag("bottom_nav_directory")
                             )
 
+                            val isReaderSelected = uiState.topDestination == TopLevelDestination.START_READING
                             NavigationBarItem(
-                                selected = uiState.topDestination == TopLevelDestination.START_READING,
+                                selected = isReaderSelected,
                                 onClick = { viewModel.navigateToDestination(TopLevelDestination.START_READING) },
-                                icon = { Icon(Icons.AutoMirrored.Filled.MenuBook, contentDescription = "Read") },
-                                label = { Text("Reader") },
+                                icon = {
+                                    Icon(
+                                        if (isReaderSelected) Icons.AutoMirrored.Filled.MenuBook else Icons.AutoMirrored.Outlined.MenuBook,
+                                        contentDescription = "Reader"
+                                    )
+                                },
+                                label = { Text("Reader", maxLines = 1) },
+                                colors = navItemColors,
                                 modifier = Modifier.testTag("bottom_nav_reader")
                             )
 
+                            val isCorpusSelected = uiState.topDestination == TopLevelDestination.SHARED_CORPUS_HUB
                             NavigationBarItem(
-                                selected = uiState.topDestination == TopLevelDestination.SHARED_CORPUS_HUB,
+                                selected = isCorpusSelected,
                                 onClick = { viewModel.navigateToDestination(TopLevelDestination.SHARED_CORPUS_HUB) },
-                                icon = { Icon(Icons.Default.Hub, contentDescription = "Corpus") },
-                                label = { Text("Corpus") },
+                                icon = {
+                                    Icon(
+                                        if (isCorpusSelected) Icons.Filled.Hub else Icons.Outlined.Hub,
+                                        contentDescription = "Commons"
+                                    )
+                                },
+                                label = { Text("Commons", maxLines = 1) },
+                                colors = navItemColors,
                                 modifier = Modifier.testTag("bottom_nav_corpus")
                             )
 
+                            val isAccountSelected = uiState.topDestination == TopLevelDestination.AI_SETTINGS ||
+                                uiState.topDestination == TopLevelDestination.AUTH_PORTAL ||
+                                uiState.topDestination == TopLevelDestination.SUPERADMIN_DASHBOARD
                             NavigationBarItem(
-                                selected = uiState.topDestination == TopLevelDestination.AI_SETTINGS ||
-                                    uiState.topDestination == TopLevelDestination.AUTH_PORTAL,
+                                selected = isAccountSelected,
                                 onClick = {
                                     if (isLoggedIn) {
                                         viewModel.navigateToDestination(TopLevelDestination.AI_SETTINGS)
@@ -362,23 +505,14 @@ fun PolyglotPlatformApp(
                                 },
                                 icon = {
                                     Icon(
-                                        if (isLoggedIn) Icons.Default.Key else Icons.Default.AccountCircle,
+                                        if (isAccountSelected) Icons.Filled.AccountCircle else Icons.Outlined.AccountCircle,
                                         contentDescription = "Account"
                                     )
                                 },
-                                label = { Text(if (isLoggedIn) "Account" else "Sign In") },
+                                label = { Text(if (isLoggedIn) "Profile" else "Sign In", maxLines = 1) },
+                                colors = navItemColors,
                                 modifier = Modifier.testTag("bottom_nav_account")
                             )
-
-                            if (isSuperadmin) {
-                                NavigationBarItem(
-                                    selected = uiState.topDestination == TopLevelDestination.SUPERADMIN_DASHBOARD,
-                                    onClick = { viewModel.navigateToDestination(TopLevelDestination.SUPERADMIN_DASHBOARD) },
-                                    icon = { Icon(Icons.Default.AdminPanelSettings, contentDescription = "Superadmin") },
-                                    label = { Text("Admin") },
-                                    modifier = Modifier.testTag("bottom_nav_superadmin")
-                                )
-                            }
                         }
                     }
                 }
@@ -514,8 +648,20 @@ fun PolyglotPlatformApp(
                                     onSignUpClick = { viewModel.openAuthPortal(signUpMode = true) },
                                     onTrySampleBookClick = { viewModel.openPublicSampleBook() },
                                     onBrowseDirectoryClick = { viewModel.navigateToDestination(TopLevelDestination.DIRECTORY) },
-                                    onExtractFileClick = { pdfPickerLauncher.launch(multiFormatMimeTypes) },
-                                    onExtractSampleEpubClick = { viewModel.extractSampleEpubPeerToPeer() }
+                                    onExtractFileClick = {
+                                        if (isLoggedIn) {
+                                            pdfPickerLauncher.launch(multiFormatMimeTypes)
+                                        } else {
+                                            viewModel.openAuthPortal(signUpMode = false)
+                                        }
+                                    },
+                                    onExtractSampleEpubClick = {
+                                        if (isLoggedIn) {
+                                            viewModel.extractSampleEpubPeerToPeer()
+                                        } else {
+                                            viewModel.openAuthPortal(signUpMode = false)
+                                        }
+                                    }
                                 )
                             }
 
@@ -580,41 +726,6 @@ fun PolyglotPlatformApp(
                                 val activeBook = uiState.activeBook ?: uiState.directoryBooks.firstOrNull()
                                 if (activeBook != null) {
                                     Column(modifier = Modifier.fillMaxSize()) {
-                                        // Understated Workspace Segmented Switcher (Hidden in Focus Mode)
-                                        AnimatedVisibility(visible = !inFocusedReading) {
-                                            Surface(
-                                                color = MaterialTheme.colorScheme.background,
-                                                modifier = Modifier.fillMaxWidth()
-                                            ) {
-                                                Row(
-                                                    modifier = Modifier
-                                                        .fillMaxWidth()
-                                                        .padding(horizontal = 16.dp, vertical = 6.dp),
-                                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                                    verticalAlignment = Alignment.CenterVertically
-                                                ) {
-                                                    ReaderModePill(
-                                                        label = "Read",
-                                                        selected = uiState.workspaceTab == ReaderWorkspaceTab.READER,
-                                                        onClick = { viewModel.setWorkspaceTab(ReaderWorkspaceTab.READER) },
-                                                        modifier = Modifier.testTag("workspace_tab_reader")
-                                                    )
-                                                    ReaderModePill(
-                                                        label = "Search & Bookmarks",
-                                                        selected = uiState.workspaceTab == ReaderWorkspaceTab.SEARCH_AND_BOOKMARKS,
-                                                        onClick = { viewModel.setWorkspaceTab(ReaderWorkspaceTab.SEARCH_AND_BOOKMARKS) },
-                                                        modifier = Modifier.testTag("workspace_tab_search")
-                                                    )
-                                                    ReaderModePill(
-                                                        label = "Ask This Book",
-                                                        selected = uiState.workspaceTab == ReaderWorkspaceTab.ASK_BOOK,
-                                                        onClick = { viewModel.setWorkspaceTab(ReaderWorkspaceTab.ASK_BOOK) },
-                                                        modifier = Modifier.testTag("workspace_tab_ask_book")
-                                                    )
-                                                }
-                                            }
-                                        }
-
                                         when (uiState.workspaceTab) {
                                             ReaderWorkspaceTab.READER -> {
                                                 BilingualBookReaderPane(
@@ -624,6 +735,10 @@ fun PolyglotPlatformApp(
                                                     activeChapter = uiState.activeChapter,
                                                     activeSection = uiState.activeSection,
                                                     paragraphs = uiState.sectionParagraphs,
+                                                    continuousBlocks = uiState.continuousBlocks,
+                                                    onViewportPositionChanged = { secId, paraId ->
+                                                        viewModel.onViewportPositionChanged(secId, paraId)
+                                                    },
                                                     discoveryStatus = uiState.discoveryStatus,
                                                     cachedLanguages = uiState.cachedLanguagesForActiveBook,
                                                     ocrAuditsForBook = uiState.ocrAuditsForActiveBook,
@@ -675,7 +790,9 @@ fun PolyglotPlatformApp(
                                                     onOpenLanguageSettings = {
                                                         isFocusModeEnabled = false
                                                         viewModel.navigateToDestination(TopLevelDestination.AI_SETTINGS)
-                                                    }
+                                                    },
+                                                    appThemeMode = appThemeMode,
+                                                    onSelectAppThemeMode = { viewModel.setAppThemeMode(it) }
                                                 )
                                             }
 
@@ -729,8 +846,20 @@ fun PolyglotPlatformApp(
                                     },
                                     onOpenPlansDialog = { viewModel.openPlansDialog() },
                                     onOpenBookInReader = { book -> viewModel.openBookForReading(book) },
-                                    onExtractAnyFileClick = { pdfPickerLauncher.launch(multiFormatMimeTypes) },
-                                    onExtractSampleEpubClick = { viewModel.extractSampleEpubPeerToPeer() }
+                                    onExtractAnyFileClick = {
+                                        if (isLoggedIn) {
+                                            pdfPickerLauncher.launch(multiFormatMimeTypes)
+                                        } else {
+                                            viewModel.openAuthPortal(signUpMode = false)
+                                        }
+                                    },
+                                    onExtractSampleEpubClick = {
+                                        if (isLoggedIn) {
+                                            viewModel.extractSampleEpubPeerToPeer()
+                                        } else {
+                                            viewModel.openAuthPortal(signUpMode = false)
+                                        }
+                                    }
                                 )
                             }
 
@@ -985,31 +1114,90 @@ private fun ReaderModePill(
     modifier: Modifier = Modifier
 ) {
     Surface(
-        shape = RoundedCornerShape(8.dp),
+        shape = RoundedCornerShape(18.dp),
         color = if (selected) {
-            MaterialTheme.colorScheme.secondaryContainer
+            MaterialTheme.colorScheme.primaryContainer
         } else {
-            Color.Transparent
+            MaterialTheme.colorScheme.surfaceContainerLow
         },
         border = if (selected) {
-            null
+            BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.4f))
         } else {
             BorderStroke(0.5.dp, MaterialTheme.colorScheme.outlineVariant)
         },
         modifier = modifier
-            .clip(RoundedCornerShape(8.dp))
+            .clip(RoundedCornerShape(18.dp))
             .clickable { onClick() }
     ) {
         Text(
             text = label,
             style = MaterialTheme.typography.labelMedium,
-            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
             color = if (selected) {
-                MaterialTheme.colorScheme.onSecondaryContainer
+                MaterialTheme.colorScheme.onPrimaryContainer
             } else {
                 MaterialTheme.colorScheme.onSurfaceVariant
             },
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp)
+            modifier = Modifier.padding(horizontal = 11.dp, vertical = 6.dp)
         )
     }
 }
+
+/**
+ * Simple abstract circular dot divided into two contrasting color halves
+ * where the stepped negative-space seam between the two halves forms an "L"
+ * hidden in plain sight.
+ */
+@Composable
+fun LipiSplitDotMark(modifier: Modifier = Modifier) {
+    val leftHalfColor = MaterialTheme.colorScheme.primary
+    val rightHalfColor = MaterialTheme.colorScheme.tertiaryContainer
+    val bgSeamColor = MaterialTheme.colorScheme.background
+
+    Canvas(modifier = modifier) {
+        val w = size.width
+        val h = size.height
+        val circlePath = Path().apply {
+            addOval(Rect(0f, 0f, w, h))
+        }
+
+        clipPath(circlePath) {
+            // Left/Lower terracotta half
+            drawRect(
+                color = leftHalfColor,
+                topLeft = Offset(0f, 0f),
+                size = Size(w, h)
+            )
+
+            // Right/Upper contrasting half bounded by the L-shaped step
+            val upperRightHalf = Path().apply {
+                moveTo(w * 0.44f, 0f)
+                lineTo(w, 0f)
+                lineTo(w, h * 0.64f)
+                lineTo(w * 0.44f, h * 0.64f)
+                close()
+            }
+            drawPath(
+                path = upperRightHalf,
+                color = rightHalfColor
+            )
+
+            // Negative-space L-shaped seam dividing the two halves in plain sight
+            val hiddenLPath = Path().apply {
+                moveTo(w * 0.44f, h * 0.16f)
+                lineTo(w * 0.44f, h * 0.64f)
+                lineTo(w * 0.82f, h * 0.64f)
+            }
+            drawPath(
+                path = hiddenLPath,
+                color = bgSeamColor,
+                style = Stroke(
+                    width = w * 0.12f,
+                    cap = StrokeCap.Square,
+                    join = StrokeJoin.Miter
+                )
+            )
+        }
+    }
+}
+

@@ -90,7 +90,7 @@ class SuperadminBackendApi(
                 previousValue = previousValue,
                 newValue = newValue,
                 reasonOrNote = reasonOrNote.ifBlank { "Superadmin console configuration update" },
-                deviceOrContextInfo = "VidyaKosha Superadmin Console • Verified Session"
+                deviceOrContextInfo = "Lipi Superadmin Console • Verified Session"
             )
         )
     }
@@ -461,7 +461,7 @@ class SuperadminBackendApi(
             editionLabel = editionLabel.trim().ifBlank { "1st Critical Edition" },
             isbnOrIdentifier = isbnOrIdentifier.trim(),
             publicationYear = publicationYear.trim().ifBlank { "2026" },
-            publicationInfo = publicationInfo.trim().ifBlank { publisherName.trim().ifBlank { "VidyaKosha Press" } },
+            publicationInfo = publicationInfo.trim().ifBlank { publisherName.trim().ifBlank { "Lipi Press" } },
             customMetadataJson = "{}",
             publicationStatus = normalizedPubStatus,
             searchIndexStatus = if (normalizedPubStatus == BookPublicationStatus.PUBLISHED) "INDEXED" else "NOT_INDEXED",
@@ -471,7 +471,7 @@ class SuperadminBackendApi(
             isPaid = isPaidBook,
             accessPolicy = normalizedPolicy,
             rightsCategory = rightsCategory.trim().uppercase().ifBlank { BookRightsCategory.PUBLIC_DOMAIN },
-            publisherName = publisherName.trim().ifBlank { "VidyaKosha Archival Press" },
+            publisherName = publisherName.trim().ifBlank { "Lipi Archival Press" },
             priceDisplay = priceDisplay.trim().ifBlank { if (isPaidBook) "$9.99" else "Free" },
             coverBadgeColorHex = coverBadgeColorHex.trim().ifBlank { "#37474F" },
             sourcePdfPath = "ADMIN_CATALOG_WORK://${workId.ifBlank { "EDITION" }}",

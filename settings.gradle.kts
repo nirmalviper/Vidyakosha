@@ -22,6 +22,6 @@ dependencyResolutionManagement {
   }
 }
 
-rootProject.name = "VidyaKosha"
+rootProject.name = "Lipi"
 
 include(":app")

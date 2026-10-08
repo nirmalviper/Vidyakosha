@@ -1,6 +1,6 @@
 {
-  "name": "VidyaKosha",
-  "description": "Decentralized peer-to-peer knowledge extraction & multilingual translation studio. Convert PDF, EPUB, TXT, Markdown, and HTML into structured OCR segments and read across 100+ languages while never hosting original restricted documents.",
+  "name": "Lipi",
+  "description": "Lipi — Global digital reading, deterministic PDF/EPUB/Camera OCR extraction, continuous reading & listening, and permanent versioned translation platform.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

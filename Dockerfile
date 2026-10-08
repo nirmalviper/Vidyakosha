@@ -1,7 +1,7 @@
 # Coolify Full-Stack Backend + APK Distribution Server Dockerfile
 FROM node:20-alpine
 
-WORKDIR /srv/vidyakosha
+WORKDIR /srv/lipi
 
 # Install dependencies for Coolify Backend API + PostgreSQL client
 COPY coolify-backend/package.json ./coolify-backend/package.json

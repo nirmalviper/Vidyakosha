@@ -43,6 +43,8 @@ import com.example.data.local.UserEntitlementEntity
 import com.example.data.local.UserEntity
 import com.example.data.local.UserRole
 import com.example.data.repository.PolyglotRepository
+import com.example.ui.theme.AppThemeMode
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -183,7 +185,10 @@ data class PolyglotUiState(
     // TTS Audio State
     val speakingParagraphId: Long? = null,
     val isSpeakingOriginal: Boolean = false,
-    val isPlayingFullSectionAudio: Boolean = false
+    val isPlayingFullSectionAudio: Boolean = false,
+
+    // Global App Theme Mode (White, Sepia, Dark)
+    val appThemeMode: AppThemeMode = AppThemeMode.WHITE
 )
 
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -213,6 +218,8 @@ class PolyglotViewModel(application: Application) : AndroidViewModel(application
 
     private val _activeBookId = MutableStateFlow<Long?>(null)
     private val _activeSectionId = MutableStateFlow<Long?>(null)
+    private val _loadedSectionIds = MutableStateFlow<List<Long>>(emptyList())
+    private val _currentVisibleParagraphId = MutableStateFlow<Long?>(null)
     private val _selectedLanguage = MutableStateFlow(LanguageRegistry.findByNameOrCode("Gujarati"))
     private val _userTopLanguages = MutableStateFlow(LanguageRegistry.parseTopThreeLanguages(null))
     private val _workspaceTab = MutableStateFlow(ReaderWorkspaceTab.READER)
@@ -240,6 +247,8 @@ class PolyglotViewModel(application: Application) : AndroidViewModel(application
     private val _speakingParagraphId = MutableStateFlow<Long?>(null)
     private val _isSpeakingOriginal = MutableStateFlow(false)
     private val _isPlayingFullSectionAudio = MutableStateFlow(false)
+    private val _appThemeMode = MutableStateFlow(AppThemeMode.WHITE)
+    val appThemeMode: StateFlow<AppThemeMode> = _appThemeMode.asStateFlow()
     private var fullSectionQueue: List<BilingualParagraphItem> = emptyList()
     private var fullSectionQueueIndex: Int = 0
     private var textToSpeech: TextToSpeech? = null
@@ -424,7 +433,8 @@ class PolyglotViewModel(application: Application) : AndroidViewModel(application
             platformMetadataFlow,
             adminAuditLogsFlow,
             _adminActionBanner,
-            _adminActionIsError
+            _adminActionIsError,
+            _loadedSectionIds
         )
     ) { values ->
         val currentUser = values[0] as UserEntity?
@@ -539,6 +549,8 @@ class PolyglotViewModel(application: Application) : AndroidViewModel(application
         val adminAuditLogs = values[67] as List<AdminAuditLogEntity>
         val adminActionBanner = values[68] as String?
         val adminActionIsError = values[69] as Boolean
+        @Suppress("UNCHECKED_CAST")
+        val explicitLoadedSectionIds = values[70] as List<Long>
 
         val discoverableDirectoryBooks = repository.bookApi.filterDiscoverableBooks(
             allBooks = allSystemBooks,
@@ -585,6 +597,60 @@ class PolyglotViewModel(application: Application) : AndroidViewModel(application
                     transliterationLearning = transliterationMap[p.id],
                     isBookmarked = bookmark != null,
                     highlightSnippet = bookmark?.userNote
+                )
+            }
+
+        // Progressive / Windowed Continuous Reading Blocks:
+        // Load only the current section and surrounding sections in the active window (never the entire book at once)
+        val validExplicitIds = explicitLoadedSectionIds.filter { id -> sections.any { it.id == id } }
+        val activeWindowSectionIds = if (validExplicitIds.isNotEmpty()) {
+            validExplicitIds.toSet()
+        } else {
+            val anchorIdx = sections.indexOfFirst { it.id == activeSection?.id }.coerceAtLeast(0)
+            // Initial progressive window: current section + immediately following section
+            sections.drop(anchorIdx).take(2).map { it.id }.toSet()
+        }
+
+        val firstSectionIdByChapter = sections
+            .groupBy { it.chapterId }
+            .mapValues { (_, chSecs) -> chSecs.minByOrNull { it.sectionOrder }?.id }
+
+        val continuousSectionBlocks = sections
+            .mapIndexedNotNull { globalIdx, sec ->
+                if (sec.id !in activeWindowSectionIds) return@mapIndexedNotNull null
+                val ch = chapters.find { it.id == sec.chapterId } ?: activeChapter ?: chapters.firstOrNull()
+                    ?: return@mapIndexedNotNull null
+                val secParagraphs = bookParagraphs
+                    .filter { it.sectionId == sec.id }
+                    .sortedBy { it.paragraphOrder }
+                    .map { p ->
+                        val bookmark = bookmarkMap[p.id]
+                        val activeTrans = activeTranslationMap[p.id]
+                        val versions = versionsByParagraphMap[p.id] ?: emptyList()
+                        val requiresReview = activeTrans != null &&
+                            activeTrans.sourceContentHash.isNotBlank() &&
+                            p.sourceContentHash.isNotBlank() &&
+                            activeTrans.sourceContentHash != p.sourceContentHash
+
+                        BilingualParagraphItem(
+                            paragraph = p,
+                            activeTranslation = activeTrans,
+                            allVersions = versions,
+                            allVersionsCount = versions.size,
+                            requiresSourceReview = requiresReview,
+                            transliterationLearning = transliterationMap[p.id],
+                            isBookmarked = bookmark != null,
+                            highlightSnippet = bookmark?.userNote
+                        )
+                    }
+                ContinuousSectionBlock(
+                    chapter = ch,
+                    isFirstSectionOfChapter = firstSectionIdByChapter[sec.chapterId] == sec.id,
+                    section = sec,
+                    globalSectionIndex = globalIdx,
+                    totalBookSections = sections.size.coerceAtLeast(1),
+                    paragraphs = secParagraphs,
+                    isFullyTranslated = secParagraphs.isNotEmpty() && secParagraphs.all { it.activeTranslation != null }
                 )
             }
 
@@ -663,6 +729,7 @@ class PolyglotViewModel(application: Application) : AndroidViewModel(application
             activeChapter = activeChapter,
             activeSection = activeSection,
             sectionParagraphs = activeSectionParagraphs,
+            continuousBlocks = continuousSectionBlocks,
             discoveryStatus = discoveryStatus,
             cachedLanguagesForActiveBook = scopedCachedLanguages,
             bookmarksForActiveBook = bookmarksForActiveBook,
@@ -691,7 +758,8 @@ class PolyglotViewModel(application: Application) : AndroidViewModel(application
             isSearching = isSearching,
             speakingParagraphId = speakingParagraphId,
             isSpeakingOriginal = isSpeakingOriginal,
-            isPlayingFullSectionAudio = isPlayingFullSectionAudio
+            isPlayingFullSectionAudio = isPlayingFullSectionAudio,
+            appThemeMode = _appThemeMode.value
         )
     }.stateIn(
         scope = viewModelScope,
@@ -700,8 +768,29 @@ class PolyglotViewModel(application: Application) : AndroidViewModel(application
     )
 
     init {
+        val prefs = application.getSharedPreferences("lipi_ui_prefs", android.content.Context.MODE_PRIVATE)
+        val savedTheme = prefs.getString("app_theme_mode", AppThemeMode.WHITE.name)
+        _appThemeMode.value = AppThemeMode.entries.find { it.name == savedTheme } ?: AppThemeMode.WHITE
         initTextToSpeech()
         initializeSessionAndPublicCatalog()
+    }
+
+    fun setAppThemeMode(mode: AppThemeMode) {
+        _appThemeMode.value = mode
+        getApplication<Application>()
+            .getSharedPreferences("lipi_ui_prefs", android.content.Context.MODE_PRIVATE)
+            .edit()
+            .putString("app_theme_mode", mode.name)
+            .apply()
+    }
+
+    fun cycleAppThemeMode() {
+        val next = when (_appThemeMode.value) {
+            AppThemeMode.WHITE -> AppThemeMode.SEPIA
+            AppThemeMode.SEPIA -> AppThemeMode.DARK
+            AppThemeMode.DARK -> AppThemeMode.WHITE
+        }
+        setAppThemeMode(next)
     }
 
     private fun initializeSessionAndPublicCatalog() {
@@ -1083,38 +1172,47 @@ class PolyglotViewModel(application: Application) : AndroidViewModel(application
         stopSpeaking()
         _activeBookId.value = bookId
         _errorBannerMessage.value = null
+        _currentVisibleParagraphId.value = null
 
         val userId = _currentUser.value?.id ?: 0L
         val savedProgress = if (userId > 0L) {
             repository.getUserReadingProgressForBook(userId, bookId)
         } else null
 
+        val allChapters = repository.getChaptersForBook(bookId)
+        val allBookSections = allChapters.flatMap { ch -> repository.getSectionsForChapter(ch.id) }
+
         if (savedProgress != null) {
             _activeSectionId.value = savedProgress.currentSectionId
+            _currentVisibleParagraphId.value = savedProgress.currentParagraphId.takeIf { it > 0L }
             val savedLang = LanguageRegistry.findByNameOrCode(savedProgress.preferredLanguage)
             val topThree = _userTopLanguages.value
             _selectedLanguage.value = if (topThree.any { it.code == savedLang.code }) savedLang else topThree.first()
         } else {
-            val chapters = repository.getChaptersForBook(bookId)
-            val firstChapter = chapters.firstOrNull()
-            val firstSection = if (firstChapter != null) {
-                repository.getSectionsForChapter(firstChapter.id).firstOrNull()
-            } else null
+            val firstSection = allBookSections.firstOrNull()
             _activeSectionId.value = firstSection?.id
         }
+
+        // Initialize progressive section window: current section + next section (max 2 initially)
+        val startIdx = allBookSections.indexOfFirst { it.id == _activeSectionId.value }.coerceAtLeast(0)
+        val initialWindow = allBookSections.drop(startIdx).take(2).map { it.id }
+        _loadedSectionIds.value = initialWindow
 
         if (navigateToReader) {
             _topDestination.value = TopLevelDestination.START_READING
             _workspaceTab.value = ReaderWorkspaceTab.READER
-            val targetSectionId = _activeSectionId.value
-            if (targetSectionId != null && _autoTranslateOnScroll.value) {
-                triggerAutoTranslationOrReuseForSection(bookId, targetSectionId, _selectedLanguage.value.name)
+            if (_autoTranslateOnScroll.value) {
+                initialWindow.forEach { secId ->
+                    triggerAutoTranslationOrReuseForSection(bookId, secId, _selectedLanguage.value.name)
+                }
             }
         }
     }
 
     fun selectSection(sectionId: Long, triggeredBySwipe: Boolean = false) {
-        stopSpeaking()
+        if (!triggeredBySwipe) {
+            stopSpeaking()
+        }
         _activeSectionId.value = sectionId
         val book = uiState.value.activeBook ?: return
 
@@ -1123,13 +1221,27 @@ class PolyglotViewModel(application: Application) : AndroidViewModel(application
             val chapter = dao.getChaptersForBook(book.id).find { it.id == section.chapterId } ?: return@launch
             val paragraphs = dao.getParagraphsForSection(sectionId)
             val firstParaId = paragraphs.firstOrNull()?.id ?: 0L
-
-            if (triggeredBySwipe) {
-                _continuousScrollNotice.value = "Loaded ${section.heading}"
+            if (!triggeredBySwipe) {
+                _currentVisibleParagraphId.value = firstParaId.takeIf { it > 0L }
             }
 
             val allBookSections = uiState.value.sections
             val secIndex = allBookSections.indexOfFirst { it.id == sectionId }.coerceAtLeast(0)
+
+            if (!triggeredBySwipe) {
+                // Jumping via TOC or search resets the progressive window around the chosen section
+                val windowSecs = allBookSections.drop(secIndex).take(2).map { it.id }
+                _loadedSectionIds.value = windowSecs
+            } else {
+                // Progressive append/prepend preserves the continuous reading stream
+                val currentLoaded = _loadedSectionIds.value.ifEmpty { listOfNotNull(uiState.value.activeSection?.id) }
+                if (sectionId !in currentLoaded) {
+                    val merged = (currentLoaded + sectionId)
+                        .distinct()
+                        .sortedBy { id -> allBookSections.indexOfFirst { it.id == id } }
+                    _loadedSectionIds.value = if (merged.size > 6) merged.takeLast(6) else merged
+                }
+            }
 
             repository.saveUserReadingProgress(
                 userId = _currentUser.value?.id ?: 0L,
@@ -1144,29 +1256,121 @@ class PolyglotViewModel(application: Application) : AndroidViewModel(application
 
             if (_autoTranslateOnScroll.value) {
                 triggerAutoTranslationOrReuseForSection(book.id, sectionId, _selectedLanguage.value.name)
+                // Preload translation for the immediately following section so scrolling feels instant
+                val nextSec = allBookSections.getOrNull(secIndex + 1)
+                if (nextSec != null) {
+                    triggerAutoTranslationOrReuseForSection(book.id, nextSec.id, _selectedLanguage.value.name)
+                }
             }
         }
     }
 
+    /**
+     * Progressive downward loading: automatically appends the next section into the continuous
+     * reading stream when the user scrolls toward the end of the currently loaded content.
+     */
     fun advanceToNextSectionSeamless() {
         val currentSections = uiState.value.sections
-        val currentActive = uiState.value.activeSection ?: return
-        val currentIndex = currentSections.indexOfFirst { it.id == currentActive.id }
-        if (currentIndex >= 0 && currentIndex < currentSections.size - 1) {
-            val nextSection = currentSections[currentIndex + 1]
-            selectSection(nextSection.id, triggeredBySwipe = true)
-        } else {
-            _continuousScrollNotice.value = "You have reached the final section of this book."
+        if (currentSections.isEmpty()) return
+        val currentLoaded = _loadedSectionIds.value.ifEmpty {
+            uiState.value.continuousBlocks.map { it.section.id }
+        }.ifEmpty {
+            listOfNotNull(uiState.value.activeSection?.id)
+        }
+        val lastLoadedId = currentLoaded.lastOrNull() ?: return
+        val lastIndex = currentSections.indexOfFirst { it.id == lastLoadedId }
+        if (lastIndex >= 0 && lastIndex < currentSections.size - 1) {
+            val nextSection = currentSections[lastIndex + 1]
+            val updated = (currentLoaded + nextSection.id)
+                .distinct()
+                .sortedBy { id -> currentSections.indexOfFirst { it.id == id } }
+            // Keep a bounded window of up to 6 sections in memory while scrolling forward
+            _loadedSectionIds.value = if (updated.size > 6) updated.takeLast(6) else updated
+            _activeSectionId.value = nextSection.id
+
+            val book = uiState.value.activeBook ?: return
+            viewModelScope.launch {
+                val chapter = dao.getChaptersForBook(book.id).find { it.id == nextSection.chapterId }
+                val firstParaId = dao.getParagraphsForSection(nextSection.id).firstOrNull()?.id ?: 0L
+                if (chapter != null) {
+                    repository.saveUserReadingProgress(
+                        userId = _currentUser.value?.id ?: 0L,
+                        book = book,
+                        chapter = chapter,
+                        section = nextSection,
+                        paragraphId = firstParaId,
+                        preferredLanguage = _selectedLanguage.value.name,
+                        completedSections = lastIndex + 2,
+                        totalSections = currentSections.size.coerceAtLeast(1)
+                    )
+                }
+                if (_autoTranslateOnScroll.value) {
+                    triggerAutoTranslationOrReuseForSection(book.id, nextSection.id, _selectedLanguage.value.name)
+                    val lookaheadSec = currentSections.getOrNull(lastIndex + 2)
+                    if (lookaheadSec != null) {
+                        triggerAutoTranslationOrReuseForSection(book.id, lookaheadSec.id, _selectedLanguage.value.name)
+                    }
+                }
+            }
         }
     }
 
+    /**
+     * Progressive upward loading: prepends the preceding section into the continuous reading
+     * stream when the user scrolls upward toward the top of the currently loaded window.
+     */
     fun goToPreviousSectionSeamless() {
         val currentSections = uiState.value.sections
-        val currentActive = uiState.value.activeSection ?: return
-        val currentIndex = currentSections.indexOfFirst { it.id == currentActive.id }
-        if (currentIndex > 0) {
-            val prevSection = currentSections[currentIndex - 1]
-            selectSection(prevSection.id, triggeredBySwipe = true)
+        if (currentSections.isEmpty()) return
+        val currentLoaded = _loadedSectionIds.value.ifEmpty {
+            uiState.value.continuousBlocks.map { it.section.id }
+        }.ifEmpty {
+            listOfNotNull(uiState.value.activeSection?.id)
+        }
+        val firstLoadedId = currentLoaded.firstOrNull() ?: return
+        val firstIndex = currentSections.indexOfFirst { it.id == firstLoadedId }
+        if (firstIndex > 0) {
+            val prevSection = currentSections[firstIndex - 1]
+            val updated = (listOf(prevSection.id) + currentLoaded)
+                .distinct()
+                .sortedBy { id -> currentSections.indexOfFirst { it.id == id } }
+            _loadedSectionIds.value = if (updated.size > 6) updated.take(6) else updated
+            _activeSectionId.value = prevSection.id
+
+            val book = uiState.value.activeBook ?: return
+            viewModelScope.launch {
+                if (_autoTranslateOnScroll.value) {
+                    triggerAutoTranslationOrReuseForSection(book.id, prevSection.id, _selectedLanguage.value.name)
+                }
+            }
+        }
+    }
+
+    /**
+     * Tracks the user's current visible section and paragraph during continuous scrolling
+     * without interrupting reading or audio playback.
+     */
+    fun onViewportPositionChanged(sectionId: Long, paragraphId: Long) {
+        _currentVisibleParagraphId.value = paragraphId
+        if (_activeSectionId.value != sectionId) {
+            _activeSectionId.value = sectionId
+            val book = uiState.value.activeBook ?: return
+            val allSections = uiState.value.sections
+            val secIdx = allSections.indexOfFirst { it.id == sectionId }.coerceAtLeast(0)
+            viewModelScope.launch {
+                val section = dao.getSectionById(sectionId) ?: return@launch
+                val chapter = dao.getChaptersForBook(book.id).find { it.id == section.chapterId } ?: return@launch
+                repository.saveUserReadingProgress(
+                    userId = _currentUser.value?.id ?: 0L,
+                    book = book,
+                    chapter = chapter,
+                    section = section,
+                    paragraphId = paragraphId,
+                    preferredLanguage = _selectedLanguage.value.name,
+                    completedSections = secIdx + 1,
+                    totalSections = allSections.size.coerceAtLeast(1)
+                )
+            }
         }
     }
 
@@ -1230,10 +1434,16 @@ class PolyglotViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun setWorkspaceTab(tab: ReaderWorkspaceTab) {
+        if (tab != ReaderWorkspaceTab.READER) {
+            stopSpeaking()
+        }
         _workspaceTab.value = tab
     }
 
     fun setReaderDisplayMode(mode: ReaderDisplayMode) {
+        if (_readerDisplayMode.value != mode) {
+            stopSpeaking()
+        }
         _readerDisplayMode.value = mode
     }
 
@@ -1322,22 +1532,25 @@ class PolyglotViewModel(application: Application) : AndroidViewModel(application
         )
     }
 
-    fun translateCurrentSection(forceRetranslate: Boolean = false) {
+    fun translateCurrentSection(
+        forceRetranslate: Boolean = false,
+        preferNonAiLocalMt: Boolean = false
+    ) {
         val book = uiState.value.activeBook ?: return
         val section = uiState.value.activeSection ?: return
         val chapter = uiState.value.activeChapter ?: return
         val targetLang = _selectedLanguage.value.name
         val user = _currentUser.value
+        val userId = user?.id ?: 0L
 
-        if (user == null) {
-            _errorBannerMessage.value =
-                "Sign in and configure your AI API key in AI Settings to generate new AI translations."
-            openAuthPortal(signUpMode = false)
-            return
-        }
-
+        val hasAiKey = userId > 0L && uiState.value.userAiConfigs.isNotEmpty()
         val hasConsentedForBook = uiState.value.contributorConsents.any { it.bookId == book.id }
-        if (BookRightsCategory.allowsSharedRepositoryContribution(book.rightsCategory) && !hasConsentedForBook) {
+        if (user != null &&
+            hasAiKey &&
+            !preferNonAiLocalMt &&
+            BookRightsCategory.allowsSharedRepositoryContribution(book.rightsCategory) &&
+            !hasConsentedForBook
+        ) {
             _pendingContributorAction.value = PendingContributorAction(
                 book = book,
                 sectionId = section.id,
@@ -1352,14 +1565,15 @@ class PolyglotViewModel(application: Application) : AndroidViewModel(application
             _isTranslatingSection.value = true
             _errorBannerMessage.value = null
             val outcome = repository.translateSectionWithSharedRepoAndUserAi(
-                userId = user.id,
-                userDisplayName = user.displayName,
+                userId = userId,
+                userDisplayName = user?.displayName ?: "Local NMT Reader",
                 userAcceptedContributorLicense = true,
                 book = book,
                 chapter = chapter,
                 section = section,
                 targetLanguage = targetLang,
-                forceRetranslate = forceRetranslate
+                forceRetranslate = forceRetranslate,
+                preferNonAiLocalMt = preferNonAiLocalMt
             )
             _isTranslatingSection.value = false
             outcome.fold(
@@ -1526,7 +1740,13 @@ class PolyglotViewModel(application: Application) : AndroidViewModel(application
     // =====================================================================
 
     fun uploadAndIngestPdf(uri: Uri) {
-        val userId = _currentUser.value?.id ?: 0L
+        val currentUser = _currentUser.value
+        if (currentUser == null) {
+            _errorBannerMessage.value = "Please sign in to upload or import books."
+            openAuthPortal(signUpMode = false)
+            return
+        }
+        val userId = currentUser.id
 
         viewModelScope.launch {
             _isIngestingPdf.value = true
@@ -1549,7 +1769,7 @@ class PolyglotViewModel(application: Application) : AndroidViewModel(application
             result.fold(
                 onSuccess = { book ->
                     _continuousScrollNotice.value =
-                        "✓ Extracted '${book.title}' (${book.totalChapters} Ch, ${book.totalParagraphs} Para). Original file purged (0B hosted); VidyaKosha owns OCR & translation derivatives."
+                        "✓ Extracted '${book.title}' (${book.totalChapters} Ch, ${book.totalParagraphs} Para). Original file purged (0B hosted); Lipi owns OCR & translation derivatives."
                     selectBookInternal(book.id, navigateToReader = true)
                 },
                 onFailure = { err ->
@@ -1560,7 +1780,13 @@ class PolyglotViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun extractSampleEpubPeerToPeer() {
-        val userId = _currentUser.value?.id ?: 0L
+        val currentUser = _currentUser.value
+        if (currentUser == null) {
+            _errorBannerMessage.value = "Please sign in to upload or import books."
+            openAuthPortal(signUpMode = false)
+            return
+        }
+        val userId = currentUser.id
         viewModelScope.launch {
             _isIngestingPdf.value = true
             _errorBannerMessage.value = null
@@ -1581,7 +1807,7 @@ class PolyglotViewModel(application: Application) : AndroidViewModel(application
             result.fold(
                 onSuccess = { book ->
                     _continuousScrollNotice.value =
-                        "✓ Extracted EPUB '${book.title}' peer-to-peer. Original .epub binary purged (0B hosted); structured OCR & translations owned by VidyaKosha."
+                        "✓ Extracted EPUB '${book.title}' peer-to-peer. Original .epub binary purged (0B hosted); structured OCR & translations owned by Lipi."
                     selectBookInternal(book.id, navigateToReader = true)
                 },
                 onFailure = { err ->
@@ -2238,8 +2464,23 @@ class PolyglotViewModel(application: Application) : AndroidViewModel(application
             return
         }
 
-        _isPlayingFullSectionAudio.value = false
-        _speakingParagraphId.value = paragraphId
+        // Start Continuous Reading / Listen Mode from the user's selected paragraph
+        val allLoadedParagraphs = uiState.value.continuousBlocks
+            .flatMap { it.paragraphs }
+            .ifEmpty { uiState.value.sectionParagraphs }
+        val clickedItem = allLoadedParagraphs.find { it.paragraph.id == paragraphId }
+        val targetSectionId = clickedItem?.paragraph?.sectionId ?: _activeSectionId.value
+        val sectionItems = allLoadedParagraphs.filter { it.paragraph.sectionId == targetSectionId }
+            .ifEmpty { uiState.value.sectionParagraphs }
+
+        val startIndex = sectionItems.indexOfFirst { it.paragraph.id == paragraphId }.coerceAtLeast(0)
+        if (targetSectionId != null) {
+            _activeSectionId.value = targetSectionId
+        }
+        _currentVisibleParagraphId.value = paragraphId
+        fullSectionQueue = sectionItems
+        fullSectionQueueIndex = startIndex
+        _isPlayingFullSectionAudio.value = true
         _isSpeakingOriginal.value = isOriginal
 
         val bookId = _activeBookId.value
@@ -2253,7 +2494,7 @@ class PolyglotViewModel(application: Application) : AndroidViewModel(application
             }
         }
 
-        speakInternal(paragraphId, text, languageName)
+        playCurrentParagraphInQueue()
     }
 
     fun toggleFullSectionAudio(speakTranslated: Boolean = true) {
@@ -2261,19 +2502,47 @@ class PolyglotViewModel(application: Application) : AndroidViewModel(application
             stopSpeaking()
             return
         }
-        val items = uiState.value.sectionParagraphs
-        if (items.isEmpty() || !isTtsInitialized) return
+        val allLoadedParagraphs = uiState.value.continuousBlocks
+            .flatMap { it.paragraphs }
+            .ifEmpty { uiState.value.sectionParagraphs }
+        if (allLoadedParagraphs.isEmpty() || !isTtsInitialized) return
 
-        fullSectionQueue = items
-        fullSectionQueueIndex = 0
+        // Start from the user's current reading position
+        val anchorParagraphId = _speakingParagraphId.value ?: _currentVisibleParagraphId.value
+        val anchorItem = if (anchorParagraphId != null) {
+            allLoadedParagraphs.find { it.paragraph.id == anchorParagraphId }
+        } else null
+
+        val targetSectionId = anchorItem?.paragraph?.sectionId
+            ?: _activeSectionId.value
+            ?: allLoadedParagraphs.first().paragraph.sectionId
+
+        val sectionItems = allLoadedParagraphs
+            .filter { it.paragraph.sectionId == targetSectionId }
+            .ifEmpty { uiState.value.sectionParagraphs }
+        if (sectionItems.isEmpty()) return
+
+        val startIndex = if (anchorParagraphId != null) {
+            sectionItems.indexOfFirst { it.paragraph.id == anchorParagraphId }.coerceAtLeast(0)
+        } else 0
+
+        val effectiveSpeakOriginal = when (uiState.value.readerDisplayMode) {
+            ReaderDisplayMode.ORIGINAL_ONLY -> true
+            ReaderDisplayMode.TRANSLATION_ONLY -> false
+            else -> !speakTranslated
+        }
+
+        _activeSectionId.value = targetSectionId
+        fullSectionQueue = sectionItems
+        fullSectionQueueIndex = startIndex
         _isPlayingFullSectionAudio.value = true
-        _isSpeakingOriginal.value = !speakTranslated
+        _isSpeakingOriginal.value = effectiveSpeakOriginal
         playCurrentParagraphInQueue()
     }
 
     private fun playCurrentParagraphInQueue() {
         if (fullSectionQueueIndex >= fullSectionQueue.size) {
-            stopSpeaking()
+            advanceToNextSectionInContinuousAudio()
             return
         }
         val item = fullSectionQueue[fullSectionQueueIndex]
@@ -2289,15 +2558,158 @@ class PolyglotViewModel(application: Application) : AndroidViewModel(application
             _selectedLanguage.value.name
         }
         _speakingParagraphId.value = item.paragraph.id
+        _currentVisibleParagraphId.value = item.paragraph.id
+
+        // Preload the next section when approaching the end of the current section so there is no gap
+        if (fullSectionQueueIndex >= (fullSectionQueue.size - 2).coerceAtLeast(0)) {
+            preloadNextSectionForContinuousAudio(item.paragraph.sectionId)
+        }
+
         speakInternal(item.paragraph.id, textToSpeak, langName)
     }
 
     private fun playNextParagraphInQueue() {
-        fullSectionQueueIndex += 1
-        if (fullSectionQueueIndex < fullSectionQueue.size) {
-            playCurrentParagraphInQueue()
-        } else {
-            stopSpeaking()
+        viewModelScope.launch {
+            if (!_isPlayingFullSectionAudio.value) return@launch
+            fullSectionQueueIndex += 1
+            if (fullSectionQueueIndex < fullSectionQueue.size) {
+                playCurrentParagraphInQueue()
+            } else {
+                advanceToNextSectionInContinuousAudio()
+            }
+        }
+    }
+
+    /**
+     * Preloads the next section in the current chapter into the progressive window and pre-translates
+     * it if needed so continuous listening transitions with zero gap.
+     */
+    private fun preloadNextSectionForContinuousAudio(currentSectionId: Long) {
+        val book = uiState.value.activeBook ?: return
+        val allSections = uiState.value.sections
+        val currentIdx = allSections.indexOfFirst { it.id == currentSectionId }
+        if (currentIdx < 0 || currentIdx >= allSections.size - 1) return
+
+        val currentSec = allSections[currentIdx]
+        val nextSec = allSections[currentIdx + 1]
+        if (nextSec.chapterId != currentSec.chapterId) return
+
+        // Ensure nextSec is in the loaded window
+        val currentLoaded = _loadedSectionIds.value.ifEmpty {
+            uiState.value.continuousBlocks.map { it.section.id }
+        }
+        if (nextSec.id !in currentLoaded) {
+            val merged = (currentLoaded + nextSec.id)
+                .distinct()
+                .sortedBy { id -> allSections.indexOfFirst { it.id == id } }
+            _loadedSectionIds.value = if (merged.size > 6) merged.takeLast(6) else merged
+        }
+
+        if (!_isSpeakingOriginal.value) {
+            viewModelScope.launch {
+                triggerAutoTranslationOrReuseForSection(book.id, nextSec.id, _selectedLanguage.value.name)
+            }
+        }
+    }
+
+    /**
+     * Automatically continues reading into the next section of the current chapter when the
+     * current section finishes, even if the next section was not yet loaded in the UI.
+     * Stops only when the chapter has finished or when interrupted by user action.
+     */
+    private fun advanceToNextSectionInContinuousAudio() {
+        viewModelScope.launch {
+            if (!_isPlayingFullSectionAudio.value) return@launch
+            val book = uiState.value.activeBook ?: run {
+                stopSpeaking()
+                return@launch
+            }
+            val finishedSectionId = fullSectionQueue.lastOrNull()?.paragraph?.sectionId ?: _activeSectionId.value
+            val allChapters = uiState.value.chapters.ifEmpty { dao.getChaptersForBook(book.id) }
+            val allSections = uiState.value.sections.ifEmpty {
+                allChapters.flatMap { ch -> dao.getSectionsForChapter(ch.id) }
+            }
+            val currentIdx = allSections.indexOfFirst { it.id == finishedSectionId }
+            val currentSec = allSections.getOrNull(currentIdx)
+            val nextSec = allSections.getOrNull(currentIdx + 1)
+
+            // Continue across sections until the current chapter finishes
+            if (currentSec != null && nextSec != null && nextSec.chapterId == currentSec.chapterId) {
+                val currentLoaded = _loadedSectionIds.value.ifEmpty {
+                    uiState.value.continuousBlocks.map { it.section.id }
+                }
+                val merged = (currentLoaded + nextSec.id)
+                    .distinct()
+                    .sortedBy { id -> allSections.indexOfFirst { it.id == id } }
+                _loadedSectionIds.value = if (merged.size > 6) merged.takeLast(6) else merged
+                _activeSectionId.value = nextSec.id
+
+                val targetLang = _selectedLanguage.value.name
+                var rawParagraphs = dao.getParagraphsForSection(nextSec.id).sortedBy { it.paragraphOrder }
+
+                if (!_isSpeakingOriginal.value && rawParagraphs.isNotEmpty()) {
+                    val missingAny = rawParagraphs.any { p ->
+                        dao.getPreferredTranslationForParagraph(p.id, targetLang) == null
+                    }
+                    if (missingAny) {
+                        val chapter = allChapters.find { it.id == nextSec.chapterId }
+                        if (chapter != null) {
+                            val user = _currentUser.value
+                            repository.translateSectionWithSharedRepoAndUserAi(
+                                userId = user?.id ?: 0L,
+                                userDisplayName = user?.displayName ?: "Continuous Reader",
+                                userAcceptedContributorLicense = true,
+                                book = book,
+                                chapter = chapter,
+                                section = nextSec,
+                                targetLanguage = targetLang,
+                                forceRetranslate = false
+                            )
+                        }
+                    }
+                }
+
+                // Re-verify playback wasn't stopped while loading/translating
+                if (!_isPlayingFullSectionAudio.value) return@launch
+
+                rawParagraphs = dao.getParagraphsForSection(nextSec.id).sortedBy { it.paragraphOrder }
+                val nextItems = rawParagraphs.map { p ->
+                    val activeTrans = dao.getPreferredTranslationForParagraph(p.id, targetLang)
+                    val versions = dao.getTranslationVersionsForParagraph(p.id, targetLang)
+                    BilingualParagraphItem(
+                        paragraph = p,
+                        activeTranslation = activeTrans,
+                        allVersions = versions,
+                        allVersionsCount = versions.size
+                    )
+                }
+
+                if (nextItems.isNotEmpty() && _isPlayingFullSectionAudio.value) {
+                    val chapter = allChapters.find { it.id == nextSec.chapterId }
+                    if (chapter != null) {
+                        repository.saveUserReadingProgress(
+                            userId = _currentUser.value?.id ?: 0L,
+                            book = book,
+                            chapter = chapter,
+                            section = nextSec,
+                            paragraphId = nextItems.first().paragraph.id,
+                            preferredLanguage = targetLang,
+                            completedSections = currentIdx + 2,
+                            totalSections = allSections.size.coerceAtLeast(1)
+                        )
+                    }
+                    fullSectionQueue = nextItems
+                    fullSectionQueueIndex = 0
+                    playCurrentParagraphInQueue()
+                } else {
+                    stopSpeaking()
+                }
+            } else {
+                // Chapter has finished
+                val chapterTitle = uiState.value.activeChapter?.title ?: "chapter"
+                stopSpeaking()
+                _continuousScrollNotice.value = "Completed listening to $chapterTitle."
+            }
         }
     }
 

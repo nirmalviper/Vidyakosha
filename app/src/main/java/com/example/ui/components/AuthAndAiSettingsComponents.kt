@@ -399,7 +399,7 @@ fun AuthPortalScreen(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        text = if (isSignUpMode) "Already have an account?" else "New to Polyglot?",
+                        text = if (isSignUpMode) "Already have an account?" else "New to Lipi?",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -438,7 +438,7 @@ fun AuthPortalScreen(
                         )
                     }
                     Text(
-                        text = "Default Admin: superadmin@vidyakosha.org (or admin@vidyakosha.org) • Password: test1234",
+                        text = "Default Admin: superadmin@lipi.org (or admin@lipi.org) • Password: test1234",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.align(Alignment.CenterHorizontally)
@@ -755,7 +755,7 @@ fun UserAiSettingsScreen(
                                     value = coolifyUrlInput,
                                     onValueChange = { coolifyUrlInput = it },
                                     label = { Text("Coolify Backend Server URL (PostgreSQL + REST API)") },
-                                    placeholder = { Text("https://vidyakosha.yourdomain.com") },
+                                    placeholder = { Text("https://lipi.yourdomain.com") },
                                     singleLine = true,
                                     modifier = Modifier
                                         .weight(1f)

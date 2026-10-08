@@ -10,7 +10,7 @@ app.use(cors());
 app.use(express.json({ limit: '10mb' }));
 
 const PORT = process.env.PORT || 80;
-const DATABASE_URL = process.env.DATABASE_URL || 'postgresql://vidyakosha:vidyakosha_secret@postgres:5432/vidyakosha';
+const DATABASE_URL = process.env.DATABASE_URL || 'postgresql://lipi:lipi_secret@postgres:5432/lipi';
 const DEFAULT_ADMIN_PASSWORD = process.env.DEFAULT_ADMIN_PASSWORD || 'test1234';
 
 const pool = new Pool({ connectionString: DATABASE_URL });
@@ -46,8 +46,9 @@ async function initializeDatabaseAndDefaultAdmin() {
 
     // Seed default Superadmin accounts with password test1234 on first deployment
     const defaultAdmins = [
-      { email: 'superadmin@vidyakosha.org', name: 'VidyaKosha Superadmin' },
-      { email: 'admin@vidyakosha.org', name: 'Platform Admin (Default)' }
+      { email: 'superadmin@lipi.org', name: 'Lipi Superadmin' },
+      { email: 'admin@lipi.org', name: 'Lipi Platform Admin (Default)' },
+      { email: 'superadmin@vidyakosha.org', name: 'Lipi Superadmin (Legacy Alias)' }
     ];
 
     for (const adm of defaultAdmins) {
@@ -82,12 +83,12 @@ async function initializeDatabaseAndDefaultAdmin() {
         INSERT INTO commercial_plans (plan_code, name, description, is_enabled, monthly_price_amount, yearly_price_amount, currency_code, trial_days, display_order, is_featured, features_csv, allowed_book_access_policies_csv, daily_translation_limit, monthly_managed_ai_tokens_limit, offline_access_enabled, advanced_search_and_scholarly_enabled, tts_audio_daily_minutes_limit)
         VALUES
           ('FREE', 'Free Registered Reader', 'Read public & free books, reuse shared translations, and bring your own AI API key.', TRUE, 0.0, 0.0, 'USD', 0, 1, FALSE, 'PUBLIC_BOOKS,FREE_BOOKS,BYO_AI_KEY,P2P_EXTRACTION,TOP_3_LANGUAGE_SELECTOR', 'PUBLIC,FREE', 25, 0, FALSE, FALSE, 30),
-          ('READER', 'VidyaKosha Reader Plan', 'Unlocks verified translations, offline reading packages, enhanced TTS, and Ask This Book.', TRUE, 12.0, 119.0, 'USD', 7, 2, TRUE, 'PUBLIC_BOOKS,FREE_BOOKS,PAID_TRANSLATIONS,OFFLINE_SYNC,ENHANCED_TTS,ASK_THIS_BOOK', 'PUBLIC,FREE,PAID', 250, 150000, TRUE, FALSE, 180),
+          ('READER', 'Lipi Reader Plan', 'Unlocks verified translations, offline reading packages, enhanced TTS, and Ask This Book.', TRUE, 12.0, 119.0, 'USD', 7, 2, TRUE, 'PUBLIC_BOOKS,FREE_BOOKS,PAID_TRANSLATIONS,OFFLINE_SYNC,ENHANCED_TTS,ASK_THIS_BOOK', 'PUBLIC,FREE,PAID', 250, 150000, TRUE, FALSE, 180),
           ('PRO_RESEARCH', 'Pro & Scholarly Research', 'Full access to RESTRICTED monographs, Cross-Book IAST search, and Word-by-Word Pada commentary.', TRUE, 29.0, 290.0, 'USD', 14, 3, FALSE, 'ALL_READER_FEATURES,RESTRICTED_ARCHIVE,PAID_BOOKS,CROSS_BOOK_SEARCH,SCHOLARLY_PADA_MODE', 'PUBLIC,FREE,PAID,RESTRICTED,SPECIFIC_PLAN_ONLY,INSTITUTION_ONLY', -1, 750000, TRUE, TRUE, -1),
           ('PUBLISHER_INSTITUTION', 'Publisher & University Licence', 'Institutional seat licensing, Publisher-controlled manuscript access, and corpus governance.', TRUE, 99.0, 990.0, 'USD', 30, 4, FALSE, 'ALL_PRO_FEATURES,PUBLISHER_CMS,HUMAN_EDITORIAL_APPROVAL,INSTITUTIONAL_SEATS', 'PUBLIC,FREE,PAID,RESTRICTED,SPECIFIC_PLAN_ONLY,INDIVIDUAL_PURCHASE,INSTITUTION_ONLY,PUBLISHER_ONLY', -1, 3000000, TRUE, TRUE, -1)
       `);
     }
-    console.log('[VidyaKosha Coolify] PostgreSQL schema and default Superadmin (test1234) verified.');
+    console.log('[Lipi Coolify] PostgreSQL schema and default Superadmin (test1234) verified.');
   } finally {
     client.release();
   }
@@ -99,7 +100,7 @@ app.get('/healthz', async (req, res) => {
     await pool.query('SELECT 1');
     res.json({
       status: 'ok',
-      service: 'vidyakosha-coolify-backend',
+      service: 'lipi-coolify-backend',
       database: 'postgresql-connected',
       version: '1.0.0'
     });
@@ -110,11 +111,11 @@ app.get('/healthz', async (req, res) => {
 
 app.get('/api/v1/version.json', (req, res) => {
   res.json({
-    app: 'VidyaKosha',
+    app: 'Lipi',
     package: 'com.aistudio.polyglotpdf.kxmzqp',
     versionName: '1.0.0',
     versionCode: 1,
-    apkUrl: '/releases/vidyakosha-v1.0.0.apk',
+    apkUrl: '/releases/lipi-v1.0.0.apk',
     checksumUrl: '/releases/SHA256SUMS.txt'
   });
 });
@@ -280,7 +281,7 @@ app.use('/releases', express.static(path.join(__dirname, '..', 'releases'), {
   setHeaders: (res, filePath) => {
     if (filePath.endsWith('.apk')) {
       res.setHeader('Content-Type', 'application/vnd.android.package-archive');
-      res.setHeader('Content-Disposition', 'attachment; filename="vidyakosha-v1.0.0.apk"');
+      res.setHeader('Content-Disposition', 'attachment; filename="lipi-v1.0.0.apk"');
     }
   }
 }));
@@ -289,12 +290,12 @@ app.use('/', express.static(path.join(__dirname, '..', 'coolify')));
 initializeDatabaseAndDefaultAdmin()
   .then(() => {
     app.listen(PORT, '0.0.0.0', () => {
-      console.log(`[VidyaKosha Coolify Server] Listening on port ${PORT}`);
+      console.log(`[Lipi Coolify Server] Listening on port ${PORT}`);
     });
   })
   .catch((err) => {
-    console.error('[VidyaKosha Coolify Server] Database startup warning:', err.message);
+    console.error('[Lipi Coolify Server] Database startup warning:', err.message);
     app.listen(PORT, '0.0.0.0', () => {
-      console.log(`[VidyaKosha Coolify Server] Listening on port ${PORT} (awaiting DB)`);
+      console.log(`[Lipi Coolify Server] Listening on port ${PORT} (awaiting DB)`);
     });
   });

@@ -33,7 +33,7 @@ enum class ExtractedFormat(val code: String, val badgeLabel: String) {
     MARKDOWN("MARKDOWN", "Markdown (.md)"),
     PLAIN_TEXT("PLAIN_TEXT", "Plain Text (.txt)"),
     HTML("HTML", "HTML / Web Article"),
-    P2P_DERIVATIVE_JSON("P2P_JSON", "VidyaKosha P2P Derivative (.json)")
+    P2P_DERIVATIVE_JSON("P2P_JSON", "Lipi P2P Derivative (.json)")
 }
 
 data class ImportedPdfInfo(
@@ -48,8 +48,8 @@ data class ImportedPdfInfo(
  * - For EPUB, TXT, Markdown, HTML, and P2P JSON, extraction occurs 100% in-memory (0 bytes written to disk).
  * - For PDF, an ephemeral scratch file in `cacheDir` is used only during page rendering/OCR and
  *   immediately deleted in `finally` via `purgeEphemeralFile()`.
- * - VidyaKosha never hosts or retains the user's original certified/restricted file;
- *   VidyaKosha owns and persists only the extracted structured OCR segments and translations.
+ * - Lipi never hosts or retains the user's original certified/restricted file;
+ *   Lipi owns and persists only the extracted structured OCR segments and translations.
  */
 data class EphemeralExtractedDocument(
     val title: String,
@@ -60,6 +60,8 @@ data class EphemeralExtractedDocument(
     val unitCount: Int,
     val sourceFingerprintHash: String,
     val ephemeralPdfFile: File? = null,
+    val extractedPages: List<DeterministicPageExtractionResult> = emptyList(),
+    val extractionEngineSummary: String = "",
     val preExtractedChapters: List<OcrChapterDto> = emptyList(),
     val originalPurgedUriMarker: String
 )
@@ -82,7 +84,7 @@ object PdfProcessor {
     /**
      * Multi-format P2P Ephemeral Extractor supporting:
      * - `.epub` (application/epub+zip)
-     * - `.pdf` (application/pdf)
+     * - `.pdf` (application/pdf) -> Real per-page PDFBox Native Text + On-Device ML Kit OCR across ALL pages
      * - `.md` / `.markdown` (text/markdown)
      * - `.txt` (text/plain)
      * - `.html` / `.htm` / `.xhtml` (text/html, application/xhtml+xml)
@@ -90,7 +92,8 @@ object PdfProcessor {
      */
     suspend fun extractDocumentEphemerally(
         context: Context,
-        uri: Uri
+        uri: Uri,
+        onProgress: (stage: String, processedPages: Int, totalPages: Int) -> Unit = { _, _, _ -> }
     ): Result<EphemeralExtractedDocument> = withContext(Dispatchers.IO) {
         try {
             val contentResolver = context.contentResolver
@@ -158,44 +161,41 @@ object PdfProcessor {
                     val scratchDir = File(context.cacheDir, "ephemeral_p2p_scratch").apply { mkdirs() }
                     val scratchPdf = File(scratchDir, "ephemeral_${System.currentTimeMillis()}.pdf")
                     FileOutputStream(scratchPdf).use { it.write(rawBytes) }
-                    val pageCount = getPdfPageCount(scratchPdf)
-                    if (pageCount <= 0) {
+
+                    val prelimFingerprint = SecurityVault.computeContentFingerprint(
+                        "PDF_${cleanTitle}_${rawBytes.size}"
+                    )
+
+                    val deterministicResult = LocalOcrAndTranslationEngine.extractAllPagesFromPdfDeterministically(
+                        context = context,
+                        pdfFile = scratchPdf,
+                        fallbackTitle = cleanTitle,
+                        fingerprintPrefix = prelimFingerprint,
+                        onProgress = onProgress
+                    ).getOrElse { err ->
                         purgeEphemeralFile(scratchPdf)
-                        return@withContext Result.failure(IllegalArgumentException("The selected PDF has no readable pages."))
+                        return@withContext Result.failure(err)
                     }
+
+                    val contentSampleForHash = deterministicResult.pages
+                        .joinToString("|") { "${it.pageNumber}:${it.cleanNativeText.take(250)}" }
                     val fingerprint = SecurityVault.computeContentFingerprint(
-                        "PDF_${cleanTitle}_${rawBytes.size}_$pageCount"
+                        "PDF_${deterministicResult.documentTitle}_${rawBytes.size}_${deterministicResult.totalPages}_$contentSampleForHash"
                     )
-                    // Build local fallback structured chapters so extraction succeeds even without an external AI key
-                    val fallbackChapters = listOf(
-                        OcrChapterDto(
-                            chapterTitle = "Chapter 1: $cleanTitle (P2P Extracted PDF)",
-                            chapterSummary = "Extracted peer-to-peer from local PDF ($pageCount pages). Original PDF purged immediately after conversion.",
-                            sections = (1..pageCount.coerceAtMost(6)).map { pageNum ->
-                                OcrSectionDto(
-                                    sectionHeading = "Section 1.$pageNum • Page $pageNum",
-                                    paragraphs = listOf(
-                                        OcrParagraphDto(
-                                            pageNumber = pageNum,
-                                            blockType = "PARAGRAPH",
-                                            cleanText = "Structured OCR passage extracted from '$cleanTitle' (Page $pageNum of $pageCount). Original certified PDF is never hosted on VidyaKosha servers; only this normalized OCR derivative and its translations are retained."
-                                        )
-                                    )
-                                )
-                            }
-                        )
-                    )
+
                     Result.success(
                         EphemeralExtractedDocument(
-                            title = cleanTitle,
-                            authorOrSource = "Peer-to-Peer PDF Extraction (Original Purged)",
+                            title = deterministicResult.documentTitle,
+                            authorOrSource = deterministicResult.documentAuthor,
                             format = ExtractedFormat.PDF,
-                            detectedLanguage = "English",
+                            detectedLanguage = deterministicResult.detectedPrimaryLanguage,
                             originalByteSize = rawBytes.size.toLong(),
-                            unitCount = pageCount,
+                            unitCount = deterministicResult.totalPages,
                             sourceFingerprintHash = fingerprint,
                             ephemeralPdfFile = scratchPdf,
-                            preExtractedChapters = fallbackChapters,
+                            extractedPages = deterministicResult.pages,
+                            extractionEngineSummary = deterministicResult.primaryEngineSummary,
+                            preExtractedChapters = deterministicResult.chapters,
                             originalPurgedUriMarker = "P2P_EPHEMERAL_PURGED://PDF/${fingerprint.take(16)}"
                         )
                     )
@@ -281,7 +281,7 @@ object PdfProcessor {
                                 OcrParagraphDto(
                                     pageNumber = 1,
                                     blockType = "PARAGRAPH",
-                                    cleanText = "EPUB content extracted via VidyaKosha Zero-Host P2P Extractor."
+                                    cleanText = "EPUB content extracted via Lipi Zero-Host P2P Extractor."
                                 )
                             )
                         )
@@ -315,7 +315,7 @@ object PdfProcessor {
     }
 
     /**
-     * Parses Markdown (.md), Plain Text (.txt), HTML (.html), or VidyaKosha P2P JSON (.json)
+     * Parses Markdown (.md), Plain Text (.txt), HTML (.html), or Lipi P2P JSON (.json)
      * into structured Chapters, Sections, and Paragraphs 100% in memory.
      */
     fun extractFromTextOrHtmlBytes(
@@ -394,7 +394,7 @@ object PdfProcessor {
                 <package xmlns="http://www.idpf.org/2007/opf" unique-identifier="BookId" version="3.0">
                   <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
                     <dc:title>Kathopanishad: Dialogue on Immortal Knowledge (P2P EPUB)</dc:title>
-                    <dc:creator>Upanishadic Rishis • VidyaKosha P2P Commons</dc:creator>
+                    <dc:creator>Upanishadic Rishis • Lipi P2P Commons</dc:creator>
                     <dc:language>sa</dc:language>
                   </metadata>
                   <manifest>
@@ -612,7 +612,7 @@ object PdfProcessor {
             chapters.add(
                 OcrChapterDto(
                     chapterTitle = currentChapterTitle,
-                    chapterSummary = "Extracted via VidyaKosha P2P Text/Markdown Engine",
+                    chapterSummary = "Extracted via Lipi P2P Text/Markdown Engine",
                     sections = currentSections.toList()
                 )
             )

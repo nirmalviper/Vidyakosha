@@ -749,6 +749,9 @@ class PolyglotRepository(
     // 4. STRUCTURED READING, VERSIONED TRANSLATIONS, OCR AUDIT & ANALYTICS
     // =====================================================================
 
+    fun getBookPagesForBookFlow(bookId: Long): Flow<List<BookPageEntity>> =
+        dao.getBookPagesForBookFlow(bookId)
+
     fun getChaptersForBookFlow(bookId: Long): Flow<List<ChapterEntity>> =
         dao.getChaptersForBookFlow(bookId)
 
@@ -1042,7 +1045,8 @@ class PolyglotRepository(
         chapter: ChapterEntity,
         section: SectionEntity,
         targetLanguage: String,
-        forceRetranslate: Boolean = false
+        forceRetranslate: Boolean = false,
+        preferNonAiLocalMt: Boolean = false
     ): Result<SectionTranslationOutcome> {
         val paragraphs = dao.getParagraphsForSection(section.id)
         if (paragraphs.isEmpty()) {
@@ -1090,15 +1094,128 @@ class PolyglotRepository(
                     reusedCount = reusedCount,
                     newlyGeneratedCount = 0,
                     contributedToSharedLibrary = false,
-                    noticeMessage = "✓ Reused $reusedCount existing canonical/Translation Memory translation(s) from the Polyglot Shared Repository (0 AI calls needed)."
+                    noticeMessage = "✓ Reused $reusedCount existing canonical/Translation Memory translation(s) from the Shared Repository (0 calls needed)."
                 )
             )
         }
 
-        // Otherwise, resolve the user's own AI credential and run a persistent processing job (#10)
-        val credentialResult = resolveUserCredentialForTask(userId, AiTaskKind.TRANSLATION)
-        val credential = credentialResult.getOrElse { return Result.failure(it) }
+        val pairs = paragraphsNeedingAi.map { it.id to it.originalText }
 
+        // Check if user has an optional AI credential configured AND did not explicitly request Non-AI Local MT
+        val credentialResult = if (!preferNonAiLocalMt) {
+            resolveUserCredentialForTask(userId, AiTaskKind.TRANSLATION)
+        } else {
+            Result.failure(IllegalStateException("Non-AI Local MT selected"))
+        }
+        val optionalAiCredential = credentialResult.getOrNull()
+
+        // =====================================================================
+        // PATH A: NON-AI / LOCAL & OPEN-SOURCE MACHINE TRANSLATION (Default when no AI key is set or when Non-AI mode is selected)
+        // =====================================================================
+        if (optionalAiCredential == null) {
+            val localJobId = dao.insertProcessingJob(
+                ProcessingJobEntity(
+                    jobType = if (forceRetranslate) JobType.RETRANSLATION else JobType.TRANSLATION,
+                    status = JobStatus.PROCESSING,
+                    bookId = book.id,
+                    bookTitle = book.title,
+                    sectionId = section.id,
+                    targetLanguage = targetLanguage,
+                    requestedByUserId = userId,
+                    providerAndModel = "Local / Open-Source NMT (Non-AI)",
+                    progressPercent = 30,
+                    statusDetail = "Translating ${paragraphsNeedingAi.size} paragraph(s) into $targetLanguage without AI…"
+                )
+            )
+
+            val nonAiResult = com.example.util.LocalOcrAndTranslationEngine.translateParagraphsWithoutAi(
+                context = appContext,
+                sourceLanguage = book.originalLanguage,
+                targetLanguage = targetLanguage,
+                paragraphsToTranslate = pairs
+            )
+
+            return nonAiResult.fold(
+                onSuccess = { batch ->
+                    var newlySavedCount = 0
+                    var sharedRepoFlag = false
+
+                    for (paragraph in paragraphsNeedingAi) {
+                        val matchedDto = batch.items.find { it.paragraphId == paragraph.id }
+                            ?: batch.items.getOrNull(paragraphsNeedingAi.indexOf(paragraph))
+                        if (matchedDto != null && matchedDto.translatedText.isNotBlank()) {
+                            val saved = translationApi.saveContributedCanonicalTranslation(
+                                userId = userId,
+                                translatorName = userDisplayName.ifBlank { "Local NMT Reader" },
+                                book = book,
+                                paragraph = paragraph,
+                                targetLanguage = targetLanguage,
+                                translatedText = matchedDto.translatedText,
+                                notes = matchedDto.notes,
+                                providerName = batch.engineProviderLabel,
+                                modelName = batch.engineModelLabel,
+                                reviewStatus = TranslationReviewStatus.MACHINE_TRANSLATED,
+                                userAcceptedContributorLicense = userAcceptedContributorLicense
+                            )
+                            resolvedTranslations.add(saved)
+                            newlySavedCount++
+                            if (saved.isSharedRepositoryAsset) {
+                                sharedRepoFlag = true
+                            }
+                        }
+                    }
+
+                    dao.updateProcessingJob(
+                        ProcessingJobEntity(
+                            id = localJobId,
+                            jobType = if (forceRetranslate) JobType.RETRANSLATION else JobType.TRANSLATION,
+                            status = JobStatus.COMPLETED,
+                            bookId = book.id,
+                            bookTitle = book.title,
+                            sectionId = section.id,
+                            targetLanguage = targetLanguage,
+                            requestedByUserId = userId,
+                            providerAndModel = "${batch.engineProviderLabel} • ${batch.engineModelLabel}",
+                            progressPercent = 100,
+                            statusDetail = "Saved $newlySavedCount non-AI machine translation(s) (Reused $reusedCount from Shared Repo)"
+                        )
+                    )
+
+                    Result.success(
+                        SectionTranslationOutcome(
+                            translations = resolvedTranslations,
+                            reusedCount = reusedCount,
+                            newlyGeneratedCount = newlySavedCount,
+                            contributedToSharedLibrary = sharedRepoFlag,
+                            noticeMessage = "✓ Translated $newlySavedCount passage(s) into $targetLanguage via ${batch.engineProviderLabel} (0 AI API calls)."
+                        )
+                    )
+                },
+                onFailure = { err ->
+                    dao.updateProcessingJob(
+                        ProcessingJobEntity(
+                            id = localJobId,
+                            jobType = if (forceRetranslate) JobType.RETRANSLATION else JobType.TRANSLATION,
+                            status = JobStatus.FAILED,
+                            bookId = book.id,
+                            bookTitle = book.title,
+                            sectionId = section.id,
+                            targetLanguage = targetLanguage,
+                            requestedByUserId = userId,
+                            providerAndModel = "Local / Open-Source NMT (Non-AI)",
+                            progressPercent = 0,
+                            statusDetail = "Failed: ${err.localizedMessage?.take(80)}"
+                        )
+                    )
+                    Result.failure(err)
+                }
+            )
+        }
+
+        // =====================================================================
+        // PATH B: USER-PROVIDED AI / LLM ENHANCED TRANSLATION (With automatic Non-AI NMT fallback if AI call fails)
+        // =====================================================================
+        val credential = optionalAiCredential
         val jobId = dao.insertProcessingJob(
             ProcessingJobEntity(
                 jobType = if (forceRetranslate) JobType.RETRANSLATION else JobType.TRANSLATION,
@@ -1114,7 +1231,6 @@ class PolyglotRepository(
             )
         )
 
-        val pairs = paragraphsNeedingAi.map { it.id to it.originalText }
         val aiResult = MultiProviderAiGateway.translateStoredParagraphs(
             credential = credential,
             bookTitle = book.title,
@@ -1187,7 +1303,7 @@ class PolyglotRepository(
                 }
 
                 val notice = if (sharedRepoFlag) {
-                    "✓ Your $targetLanguage translation (${credential.providerName} • ${credential.modelName}) has been added to the Polyglot shared translation library."
+                    "✓ Your $targetLanguage translation (${credential.providerName} • ${credential.modelName}) has been added to the Lipi shared translation library."
                 } else {
                     "✓ Saved private $targetLanguage translation for your personal library."
                 }
@@ -1229,7 +1345,7 @@ class PolyglotRepository(
      *   document into structured OCR/text chapters, sections, and paragraphs.
      * - The user's original certified/restricted file is processed ephemerally and purged immediately
      *   (`0 bytes` hosted on server).
-     * - VidyaKosha owns and retains only the structured OCR derivative (`P2P_DERIVATIVE_OWNED`)
+     * - Lipi owns and retains only the structured OCR derivative (`P2P_DERIVATIVE_OWNED`)
      *   and all resulting canonical translations in the Shared Translation Repository.
      */
     suspend fun ingestPdfIntoStructuredBookForUser(
@@ -1238,7 +1354,7 @@ class PolyglotRepository(
         preferredTargetLanguage: String,
         onProgress: (stage: String, processedPages: Int, totalPages: Int) -> Unit
     ): Result<BookEntity> {
-        val extractResult = PdfProcessor.extractDocumentEphemerally(appContext, uri)
+        val extractResult = PdfProcessor.extractDocumentEphemerally(appContext, uri, onProgress)
         val extracted = extractResult.getOrElse { return Result.failure(it) }
         return ingestEphemeralExtractedDocument(
             userId = userId,
@@ -1292,28 +1408,29 @@ class PolyglotRepository(
                 return Result.success(existingByHash)
             }
 
-            val engineLabel = if (extracted.format == ExtractedFormat.PDF && optionalCredential != null) {
-                "${optionalCredential.providerName} (${optionalCredential.modelName}) + Zero-Host Purge"
-            } else {
-                "VidyaKosha P2P ${extracted.format.badgeLabel} Extractor (Original Purged)"
+            val engineLabel = when {
+                extracted.extractionEngineSummary.isNotBlank() -> extracted.extractionEngineSummary
+                extracted.format == ExtractedFormat.PDF && optionalCredential != null ->
+                    "PDFBox + ML Kit Local OCR (AI Fallback: ${optionalCredential.providerName})"
+                else -> "Deterministic ${extracted.format.badgeLabel} Extractor"
             }
 
             onProgress(
-                "Extracting '${extracted.title}' (${extracted.format.code}) via $engineLabel…",
-                0,
+                "Persisting '${extracted.title}' (${extracted.unitCount} pages) via $engineLabel…",
+                extracted.unitCount,
                 extracted.unitCount.coerceAtLeast(1)
             )
 
             val initialBook = BookEntity(
                 title = extracted.title,
-                subtitle = "P2P Extracted ${extracted.format.badgeLabel} • Original File Never Hosted",
+                subtitle = "${extracted.format.badgeLabel} • ${extracted.unitCount} Pages • $engineLabel",
                 authorOrSource = extracted.authorOrSource,
-                description = "Converted peer-to-peer into persistent chapters, sections, and paragraphs with immutable SHA-256 content hashes. Original ${extracted.format.code} binary purged immediately after extraction; VidyaKosha owns and retains only the structured OCR and translation derivatives.",
-                category = "P2P Knowledge Commons (${extracted.format.code})",
+                description = "Processed page-by-page (${extracted.unitCount} pages) into permanent Raw OCR Text, Clean Native Text, and Structured Paragraphs ($engineLabel). Original ${extracted.format.code} binary purged after extraction.",
+                category = "Knowledge Commons (${extracted.format.code})",
                 sourcePdfPath = extracted.originalPurgedUriMarker,
                 contentHash = fingerprint,
                 totalPages = extracted.unitCount.coerceAtLeast(1),
-                fileSizeBytes = 0L, // 0 bytes of original file hosted on server!
+                fileSizeBytes = 0L, // Original binary is ephemerally purged; 0 bytes hosted on server
                 originalLanguage = extracted.detectedLanguage,
                 preferredTargetLanguage = preferredTargetLanguage,
                 accessPolicy = BookAccessPolicy.PUBLIC,
@@ -1321,8 +1438,8 @@ class PolyglotRepository(
                 isPublicCatalog = true,
                 isSampleBook = false,
                 isPaid = false,
-                priceDisplay = "P2P Commons",
-                publisherName = "VidyaKosha P2P Derivative Commons",
+                priceDisplay = "Free Commons",
+                publisherName = "Lipi Knowledge Commons",
                 uploadedByUserId = userId.takeIf { it > 0L },
                 currentOcrVersion = 1,
                 ocrStatus = "IN_PROGRESS",
@@ -1348,83 +1465,106 @@ class PolyglotRepository(
                     bookTitle = extracted.title,
                     requestedByUserId = userId,
                     providerAndModel = engineLabel,
-                    progressPercent = 20,
-                    statusDetail = "Extracting ${extracted.format.code} into structured OCR derivative (original file purged after conversion)…"
+                    progressPercent = 50,
+                    statusDetail = "Storing ${extracted.unitCount} extracted pages into permanent database…"
                 )
             )
 
             val allExtractedChapters = mutableListOf<OcrChapterDto>()
             val pageEntities = mutableListOf<BookPageEntity>()
             var detectedSourceLang = extracted.detectedLanguage
+            val rawOcrByPage = mutableMapOf<Int, String>()
 
             val scratchPdf = extracted.ephemeralPdfFile
-            if (extracted.format == ExtractedFormat.PDF && scratchPdf != null && scratchPdf.exists() && optionalCredential != null) {
-                val batchSize = 2
-                val pagesToIngest = extracted.unitCount.coerceAtMost(10)
-                var pageIdx = 0
-                while (pageIdx < pagesToIngest) {
-                    val batchIndices = (pageIdx until minOf(pageIdx + batchSize, pagesToIngest)).toList()
-                    val batchPageNums = batchIndices.map { it + 1 }
-                    onProgress(
-                        "P2P OCR via ${optionalCredential.providerName}: page(s) ${batchPageNums.joinToString(", ")}…",
-                        pageIdx,
-                        pagesToIngest
-                    )
+            if (extracted.format == ExtractedFormat.PDF && extracted.extractedPages.isNotEmpty()) {
+                // Save EVERY extracted page (1..totalPages) from our deterministic PDFBox + On-Device ML Kit OCR pipeline!
+                val updatedPages = mutableListOf<com.example.util.DeterministicPageExtractionResult>()
 
-                    val bitmapsBase64 = batchIndices.mapNotNull { idx ->
-                        PdfProcessor.renderPageToBitmap(scratchPdf, idx, maxDimension = 1200)?.let { bmp ->
-                            PdfProcessor.bitmapToBase64(bmp, quality = 80)
+                for (pageRes in extracted.extractedPages) {
+                    // Only call external AI Vision OCR if local OCR found 0 text on a difficult scanned page AND user configured an AI key
+                    if (pageRes.extractionEngineUsed == "LOCAL_OCR_SCAN_EMPTY" &&
+                        optionalCredential != null &&
+                        scratchPdf != null &&
+                        scratchPdf.exists()
+                    ) {
+                        onProgress(
+                            "Enhancing difficult scanned page ${pageRes.pageNumber}/${extracted.unitCount} with ${optionalCredential.providerName} Vision…",
+                            pageRes.pageNumber,
+                            extracted.unitCount
+                        )
+                        val bmpBase64 = PdfProcessor.renderPageToBitmap(
+                            scratchPdf,
+                            pageRes.pageNumber - 1,
+                            maxDimension = 1350
+                        )?.let { PdfProcessor.bitmapToBase64(it, quality = 80) }
+
+                        val aiPageDto = if (bmpBase64 != null) {
+                            MultiProviderAiGateway.performStructuredOcrOnPages(
+                                credential = optionalCredential,
+                                bookTitle = extracted.title,
+                                pageNumbers = listOf(pageRes.pageNumber),
+                                pageImagesBase64 = listOf(bmpBase64)
+                            ).getOrNull()
+                        } else null
+
+                        val aiParagraphs = aiPageDto?.chapters?.flatMap { it.sections }?.flatMap { it.paragraphs }.orEmpty()
+                        if (aiParagraphs.isNotEmpty()) {
+                            val joinedClean = aiParagraphs.joinToString("\n\n") { it.cleanText }
+                            updatedPages.add(
+                                pageRes.copy(
+                                    extractionEngineUsed = "AI_VISION_OCR (${optionalCredential.providerName})",
+                                    rawOcrText = joinedClean,
+                                    cleanNativeText = joinedClean,
+                                    confidenceScore = 0.94f,
+                                    confidenceNote = "AI Vision OCR fallback for difficult scan (${optionalCredential.providerName})",
+                                    paragraphs = aiParagraphs
+                                )
+                            )
+                            continue
                         }
                     }
-
-                    val ocrResult = MultiProviderAiGateway.performStructuredOcrOnPages(
-                        credential = optionalCredential,
-                        bookTitle = extracted.title,
-                        pageNumbers = batchPageNums,
-                        pageImagesBase64 = bitmapsBase64
-                    )
-
-                    ocrResult.fold(
-                        onSuccess = { dto ->
-                            if (dto.detectedLanguage.isNotBlank()) {
-                                detectedSourceLang = dto.detectedLanguage
-                            }
-                            allExtractedChapters.addAll(dto.chapters)
-                            batchPageNums.forEach { pNum ->
-                                val text = dto.chapters.flatMap { it.sections }.flatMap { it.paragraphs }
-                                    .filter { it.pageNumber == pNum }
-                                    .joinToString("\n\n") { it.cleanText }
-                                pageEntities.add(
-                                    BookPageEntity(
-                                        bookId = bookId,
-                                        pageNumber = pNum,
-                                        rawOcrText = text.ifBlank { "Page $pNum extracted." },
-                                        detectedSourceLanguage = detectedSourceLang,
-                                        ocrConfidenceNote = "P2P OCR by ${optionalCredential.providerName} (Original PDF Purged)"
-                                    )
-                                )
-                            }
-                        },
-                        onFailure = {
-                            // Fall back gracefully to local P2P extracted chapters so user conversion never fails
-                            allExtractedChapters.addAll(extracted.preExtractedChapters)
-                        }
-                    )
-                    pageIdx += batchSize
+                    updatedPages.add(pageRes)
                 }
+
+                for (p in updatedPages) {
+                    rawOcrByPage[p.pageNumber] = p.rawOcrText
+                    pageEntities.add(
+                        BookPageEntity(
+                            bookId = bookId,
+                            pageNumber = p.pageNumber,
+                            hasNativeSelectableText = p.hasNativeSelectableText,
+                            extractionEngineUsed = p.extractionEngineUsed,
+                            pageImagePath = p.pageImagePath,
+                            rawOcrText = p.rawOcrText,
+                            cleanNativeText = p.cleanNativeText,
+                            detectedSourceLanguage = p.detectedLanguage,
+                            ocrConfidenceScore = p.confidenceScore,
+                            ocrConfidenceNote = p.confidenceNote,
+                            paragraphCountOnPage = p.paragraphs.size.coerceAtLeast(1)
+                        )
+                    )
+                }
+                allExtractedChapters.addAll(extracted.preExtractedChapters)
             } else {
-                // Direct P2P Extraction for EPUB, Markdown, Plain Text, HTML, P2P JSON, or keyless PDF
+                // Direct P2P Extraction for EPUB, Markdown, Plain Text, HTML, P2P JSON
                 allExtractedChapters.addAll(extracted.preExtractedChapters)
                 extracted.preExtractedChapters.forEachIndexed { idx, ch ->
                     val pageNum = idx + 1
                     val joined = ch.sections.flatMap { it.paragraphs }.joinToString("\n\n") { it.cleanText }
+                    rawOcrByPage[pageNum] = joined
                     pageEntities.add(
                         BookPageEntity(
                             bookId = bookId,
                             pageNumber = pageNum,
+                            hasNativeSelectableText = true,
+                            extractionEngineUsed = "STRUCTURED_${extracted.format.code}_PARSER",
+                            pageImagePath = "",
                             rawOcrText = joined.ifBlank { "Section $pageNum extracted." },
+                            cleanNativeText = joined.ifBlank { "Section $pageNum extracted." },
                             detectedSourceLanguage = detectedSourceLang,
-                            ocrConfidenceNote = "Extracted via $engineLabel (Original ${extracted.format.code} Never Hosted)"
+                            ocrConfidenceScore = 1.0f,
+                            ocrConfidenceNote = "Extracted deterministically via ${extracted.format.badgeLabel}",
+                            paragraphCountOnPage = ch.sections.sumOf { it.paragraphs.size }.coerceAtLeast(1)
                         )
                     )
                 }
@@ -1447,7 +1587,7 @@ class PolyglotRepository(
                                 OcrSectionDto(
                                     sectionHeading = "Section 1.1",
                                     paragraphs = listOf(
-                                        OcrParagraphDto(1, "PARAGRAPH", "Document extracted into VidyaKosha Commons.")
+                                        OcrParagraphDto(1, "PARAGRAPH", "Document extracted into Lipi Commons.")
                                     )
                                 )
                             )
@@ -1680,7 +1820,7 @@ class PolyglotRepository(
             role = "assistant",
             content = synthesizedAnswer.trim(),
             targetLanguage = targetLanguage,
-            providerAndModelUsed = "Polyglot Book-Grounded Citation Engine",
+            providerAndModelUsed = "Lipi Book-Grounded Citation Engine",
             referencedPage = primaryParaItem?.paragraph?.originalPageNumber ?: 1,
             actionType = "ASK_THIS_BOOK"
         )

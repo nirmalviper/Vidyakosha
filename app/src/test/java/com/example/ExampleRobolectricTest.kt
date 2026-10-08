@@ -159,7 +159,7 @@ class ExampleRobolectricTest {
             repository.getRestoredTopThreeLanguages(updatedUserWithTop3).map { it.name }
         )
 
-        // 7. Verify Zero-Host Peer-to-Peer EPUB & Markdown Extraction + VidyaKosha Derivative Ownership
+        // 7. Verify Zero-Host Peer-to-Peer EPUB & Markdown Extraction + Lipi Derivative Ownership
         val epubResult = repository.ingestSampleEpubForP2PCommons(
             userId = user.id,
             preferredTargetLanguage = "Gujarati",
@@ -169,7 +169,7 @@ class ExampleRobolectricTest {
         val epubBook = epubResult.getOrThrow()
         assertEquals(BookRightsCategory.P2P_DERIVATIVE_OWNED, epubBook.rightsCategory)
         assertTrue(
-            "VidyaKosha must own and allow shared repository contribution for P2P derivative works",
+            "Lipi must own and allow shared repository contribution for P2P derivative works",
             BookRightsCategory.allowsSharedRepositoryContribution(epubBook.rightsCategory)
         )
         assertEquals(
@@ -221,7 +221,7 @@ class ExampleRobolectricTest {
         // Create a normal user and an ordinary admin user
         val normalUserId = dao.insertUser(
             com.example.data.local.UserEntity(
-                email = "reader@vidyakosha.org",
+                email = "reader@lipi.org",
                 displayName = "Normal Reader",
                 passwordHash = "hash",
                 passwordSalt = "salt",
@@ -230,7 +230,7 @@ class ExampleRobolectricTest {
         )
         val ordinaryAdminId = dao.insertUser(
             com.example.data.local.UserEntity(
-                email = "editor@vidyakosha.org",
+                email = "editor@lipi.org",
                 displayName = "Editorial Admin",
                 passwordHash = "hash",
                 passwordSalt = "salt",
@@ -291,7 +291,7 @@ class ExampleRobolectricTest {
             title = "Rare Tantric Manuscript",
             subtitle = "Critical Edition",
             authorOrSource = "Abhinavagupta",
-            contributors = "VidyaKosha Scholars",
+            contributors = "Lipi Scholars",
             publisherName = "Kashmir Series",
             description = "Restricted individual purchase edition",
             originalLanguage = "Sanskrit",
@@ -360,23 +360,23 @@ class ExampleRobolectricTest {
             dao.getTranslationById(sampleTrans.id)
         )
 
-        // 6. Verify default Superadmin password is "test1234" on both superadmin@vidyakosha.org and admin@vidyakosha.org
-        val loginDefaultAdmin = repository.loginUser("admin@vidyakosha.org", "test1234")
-        assertTrue("Default admin@vidyakosha.org must sign in with test1234", loginDefaultAdmin.isSuccess)
+        // 6. Verify default Superadmin password is "test1234" on superadmin@lipi.org and admin@lipi.org
+        val loginDefaultAdmin = repository.loginUser("admin@lipi.org", "test1234")
+        assertTrue("Default admin@lipi.org must sign in with test1234", loginDefaultAdmin.isSuccess)
 
         // 7. Verify Self-Service 6-Digit Password Reset Flow & Change Password Flow
-        val resetReq = repository.requestPasswordReset("reader@vidyakosha.org")
+        val resetReq = repository.requestPasswordReset("reader@lipi.org")
         assertTrue("Password reset request must succeed for registered user", resetReq.isSuccess)
         val extractedCode = resetReq.getOrThrow().substringAfterLast(": ").trim()
         assertEquals(6, extractedCode.length)
 
-        val resetConfirm = repository.confirmPasswordReset("reader@vidyakosha.org", extractedCode, "newReaderPass99")
+        val resetConfirm = repository.confirmPasswordReset("reader@lipi.org", extractedCode, "newReaderPass99")
         assertTrue("Password reset with valid 6-digit code must succeed", resetConfirm.isSuccess)
-        assertTrue("User must sign in with newly reset password", repository.loginUser("reader@vidyakosha.org", "newReaderPass99").isSuccess)
+        assertTrue("User must sign in with newly reset password", repository.loginUser("reader@lipi.org", "newReaderPass99").isSuccess)
 
         val changePwdResult = repository.changeUserPassword(normalUserId, "newReaderPass99", "changedPass123")
         assertTrue("Authenticated password change must succeed", changePwdResult.isSuccess)
-        assertTrue(repository.loginUser("reader@vidyakosha.org", "changedPass123").isSuccess)
+        assertTrue(repository.loginUser("reader@lipi.org", "changedPass123").isSuccess)
 
         val adminResetResult = superadminApi.resetUserPasswordByAdmin(
             adminUserId = superadmin.id,
@@ -385,7 +385,7 @@ class ExampleRobolectricTest {
             reasonOrNote = "Superadmin temporary password reset"
         )
         assertTrue(adminResetResult.isSuccess)
-        assertTrue(repository.loginUser("reader@vidyakosha.org", "test1234").isSuccess)
+        assertTrue(repository.loginUser("reader@lipi.org", "test1234").isSuccess)
 
         // 8. Immutable audit log records all actions
         val auditLogs = dao.getAllAdminAuditLogs()

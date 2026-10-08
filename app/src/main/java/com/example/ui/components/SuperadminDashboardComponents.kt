@@ -1830,7 +1830,7 @@ private fun CreateOrEditBookDialog(
     var subtitle by rememberSaveable { mutableStateOf(initialBook?.subtitle ?: "") }
     var author by rememberSaveable { mutableStateOf(initialBook?.authorOrSource ?: "") }
     var contributors by rememberSaveable { mutableStateOf(initialBook?.contributors ?: "") }
-    var publisher by rememberSaveable { mutableStateOf(initialBook?.publisherName ?: "VidyaKosha Press") }
+    var publisher by rememberSaveable { mutableStateOf(initialBook?.publisherName ?: "Lipi Press") }
     var description by rememberSaveable { mutableStateOf(initialBook?.description ?: "") }
     var originalLanguage by rememberSaveable { mutableStateOf(initialBook?.originalLanguage ?: "Sanskrit") }
     var category by rememberSaveable { mutableStateOf(initialBook?.category ?: "Classical Wisdom") }

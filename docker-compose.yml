@@ -5,19 +5,19 @@ services:
     image: postgres:16-alpine
     restart: unless-stopped
     environment:
-      POSTGRES_USER: ${POSTGRES_USER:-vidyakosha}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-vidyakosha_secret}
-      POSTGRES_DB: ${POSTGRES_DB:-vidyakosha}
+      POSTGRES_USER: ${POSTGRES_USER:-lipi}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-lipi_secret}
+      POSTGRES_DB: ${POSTGRES_DB:-lipi}
     volumes:
-      - vidyakosha_pgdata:/var/lib/postgresql/data
+      - lipi_pgdata:/var/lib/postgresql/data
       - ./coolify-backend/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-vidyakosha} -d ${POSTGRES_DB:-vidyakosha}"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-lipi} -d ${POSTGRES_DB:-lipi}"]
       interval: 10s
       timeout: 5s
       retries: 5
 
-  vidyakosha-portal:
+  lipi-portal:
     build:
       context: .
       dockerfile: Dockerfile
@@ -29,7 +29,7 @@ services:
       - "80:80"
     environment:
       PORT: 80
-      DATABASE_URL: postgresql://${POSTGRES_USER:-vidyakosha}:${POSTGRES_PASSWORD:-vidyakosha_secret}@postgres:5432/${POSTGRES_DB:-vidyakosha}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-lipi}:${POSTGRES_PASSWORD:-lipi_secret}@postgres:5432/${POSTGRES_DB:-lipi}
       DEFAULT_ADMIN_PASSWORD: ${DEFAULT_ADMIN_PASSWORD:-test1234}
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:80/healthz"]
@@ -38,4 +38,4 @@ services:
       retries: 3
 
 volumes:
-  vidyakosha_pgdata:
+  lipi_pgdata:

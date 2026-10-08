@@ -1,10 +1,10 @@
 <resources>
-    <string name="app_name">VidyaKosha</string>
-    <string name="app_tagline">Peer-to-Peer Knowledge Extraction &amp; Multilingual Translation Commons</string>
+    <string name="app_name">Lipi</string>
+    <string name="app_tagline">Global Digital Reading, OCR &amp; Multilingual Translation Commons</string>
     <string name="upload_pdf">Extract PDF / EPUB / Text (P2P)</string>
     <string name="try_sample_pdf">Load Sanskrit/Indic Anthology</string>
     <string name="select_language">Target Language</string>
-    <string name="tab_bilingual_reader">Bilingual Book</string>
+    <string name="tab_bilingual_reader">Continuous Book</string>
     <string name="tab_search_bookmarks">Search &amp; Notes</string>
     <string name="tab_chatbot">AI Scholar Chat</string>
     <string name="tab_source_pdf">Source Info</string>
@@ -13,21 +13,21 @@
     <string name="translate_chapter">Translate Entire Chapter</string>
     <string name="listen_original_section">Listen Original</string>
     <string name="listen_translation_section">Listen Translation</string>
-    <string name="chat_input_hint">Ask about this section or request a custom translation…</string>
+    <string name="chat_input_hint">Ask about this book or request a custom translation…</string>
     <string name="send_message">Send message</string>
-    <string name="read_aloud">Listen</string>
+    <string name="read_aloud">Continuous Listen</string>
     <string name="stop_speaking">Stop audio</string>
     <string name="copy_text">Copy text</string>
     <string name="bookmark_paragraph">Bookmark / Highlight</string>
     <string name="page_indicator">Page %1$d of %2$d</string>
-    <string name="empty_library_title">VidyaKosha Knowledge &amp; Translation Commons</string>
-    <string name="empty_library_subtitle">Convert any PDF, EPUB, TXT, Markdown, or HTML file peer-to-peer into structured OCR chapters and translate across your Top 3 languages. Original source files are purged immediately—VidyaKosha retains only the structured OCR and translation derivatives.</string>
+    <string name="empty_library_title">Lipi Knowledge &amp; Translation Commons</string>
+    <string name="empty_library_subtitle">Convert any PDF, EPUB, TXT, Markdown, or HTML file peer-to-peer into structured OCR chapters and read continuously across your Top 3 languages. Original source files are purged immediately—Lipi retains only the structured OCR and translation derivatives.</string>
     <string name="recent_documents">Extracted Knowledge Editions</string>
     <string name="delete_document">Delete book</string>
     <string name="clear_chat">Clear conversation</string>
-    <string name="security_warning_banner">Zero-Host P2P Notice: Original PDF/EPUB files are processed ephemerally and never hosted on server. VidyaKosha owns and retains only the structured OCR and translation corpus.</string>
+    <string name="security_warning_banner">Zero-Host P2P Notice: Original PDF/EPUB files are processed ephemerally and never hosted on server. Lipi owns and retains only the structured OCR and translation corpus.</string>
     <string name="ai_thinking">Translating &amp; analyzing in %1$s…</string>
-    <string name="previous_section">Previous Section</string>
-    <string name="next_section">Next Section</string>
+    <string name="previous_section">Load Earlier Section</string>
+    <string name="next_section">Load Next Section</string>
     <string name="back_to_library">Back to Library</string>
 </resources>

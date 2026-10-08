@@ -258,7 +258,7 @@ object BookRightsCategory {
     const val PUBLIC_DOMAIN = "PUBLIC_DOMAIN"
     const val POLYGLOT_OWNED = "POLYGLOT_OWNED"
     const val PUBLISHER_LICENSED = "PUBLISHER_LICENSED"
-    const val P2P_DERIVATIVE_OWNED = "P2P_DERIVATIVE_OWNED" // Zero-host P2P: Original file purged immediately; VidyaKosha owns OCRed + translated derivative
+    const val P2P_DERIVATIVE_OWNED = "P2P_DERIVATIVE_OWNED" // Zero-host P2P: Original file purged immediately; Lipi owns OCRed + translated derivative
     const val USER_PRIVATE_UPLOAD = "USER_PRIVATE_UPLOAD"
     const val COPYRIGHTED_NO_REDISTRIBUTION = "COPYRIGHTED_NO_REDISTRIBUTION"
 
@@ -297,6 +297,7 @@ object TranslationAccessPolicy {
  * Requirement #7: Translation Quality & Review Lifecycle
  */
 object TranslationReviewStatus {
+    const val MACHINE_TRANSLATED = "MACHINE_TRANSLATED" // Deterministic Local / Open-Source NMT (Non-AI)
     const val AI_GENERATED = "AI_GENERATED"
     const val AI_REVIEWED = "AI_REVIEWED"
     const val HUMAN_REVIEWED = "HUMAN_REVIEWED"
@@ -305,6 +306,7 @@ object TranslationReviewStatus {
     const val REJECTED = "REJECTED"
 
     val ORDERED_STAGES = listOf(
+        MACHINE_TRANSLATED,
         AI_GENERATED,
         AI_REVIEWED,
         HUMAN_REVIEWED,
@@ -616,7 +618,7 @@ data class BookEntity(
     val editionLabel: String = "1st Digital Critical Edition",
     val isbnOrIdentifier: String = "",
     val publicationYear: String = "2026",
-    val publicationInfo: String = "VidyaKosha Digital Archival Press",
+    val publicationInfo: String = "Lipi Digital Archival Press",
     val customMetadataJson: String = "{}",
     val publicationStatus: String = BookPublicationStatus.PUBLISHED, // PUBLISHED, DRAFT, UNPUBLISHED, ARCHIVED
     val searchIndexStatus: String = "INDEXED",                       // INDEXED, PENDING_REINDEX, EXCLUDED
@@ -634,7 +636,7 @@ data class BookEntity(
     val isSampleBook: Boolean = false,
     val isPaid: Boolean = false,
     val priceDisplay: String = "Free",
-    val publisherName: String = "Polyglot Open Classics",
+    val publisherName: String = "Lipi Open Classics",
     val uploadedByUserId: Long? = null,
     val currentOcrVersion: Int = 1,
     val ocrStatus: String = "COMPLETED",
@@ -693,9 +695,15 @@ data class BookPageEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
     val bookId: Long,
     val pageNumber: Int,
+    val hasNativeSelectableText: Boolean = true,
+    val extractionEngineUsed: String = "PDFBOX_NATIVE_TEXT",
+    val pageImagePath: String = "",
     val rawOcrText: String,
+    val cleanNativeText: String = "",
     val detectedSourceLanguage: String,
+    val ocrConfidenceScore: Float = 0.98f,
     val ocrConfidenceNote: String = "Normalized Structured OCR",
+    val paragraphCountOnPage: Int = 1,
     val ingestedAt: Long = System.currentTimeMillis()
 )
 

@@ -179,6 +179,12 @@ interface PolyglotDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertBookPages(pages: List<BookPageEntity>)
 
+    @Query("SELECT * FROM book_pages WHERE bookId = :bookId ORDER BY pageNumber ASC")
+    fun getBookPagesForBookFlow(bookId: Long): Flow<List<BookPageEntity>>
+
+    @Query("SELECT * FROM book_pages WHERE bookId = :bookId ORDER BY pageNumber ASC")
+    suspend fun getBookPagesForBook(bookId: Long): List<BookPageEntity>
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertChapter(chapter: ChapterEntity): Long
 
@@ -589,7 +595,7 @@ interface PolyglotDao {
         PlatformMetadataEntity::class,
         AdminAuditLogEntity::class
     ],
-    version = 6,
+    version = 7,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -598,6 +604,18 @@ abstract class AppDatabase : RoomDatabase() {
     companion object {
         @Volatile
         private var INSTANCE: AppDatabase? = null
+
+        val MIGRATION_6_7 = object : Migration(6, 7) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE book_pages ADD COLUMN hasNativeSelectableText INTEGER NOT NULL DEFAULT 1")
+                db.execSQL("ALTER TABLE book_pages ADD COLUMN extractionEngineUsed TEXT NOT NULL DEFAULT 'PDFBOX_NATIVE_TEXT'")
+                db.execSQL("ALTER TABLE book_pages ADD COLUMN pageImagePath TEXT NOT NULL DEFAULT ''")
+                db.execSQL("ALTER TABLE book_pages ADD COLUMN cleanNativeText TEXT NOT NULL DEFAULT ''")
+                db.execSQL("ALTER TABLE book_pages ADD COLUMN ocrConfidenceScore REAL NOT NULL DEFAULT 0.98")
+                db.execSQL("ALTER TABLE book_pages ADD COLUMN paragraphCountOnPage INTEGER NOT NULL DEFAULT 1")
+                db.execSQL("UPDATE book_pages SET cleanNativeText = rawOcrText WHERE cleanNativeText = ''")
+            }
+        }
 
         val MIGRATION_5_6 = object : Migration(5, 6) {
             override fun migrate(db: SupportSQLiteDatabase) {
@@ -617,7 +635,7 @@ abstract class AppDatabase : RoomDatabase() {
                 db.execSQL("ALTER TABLE books ADD COLUMN editionLabel TEXT NOT NULL DEFAULT '1st Digital Critical Edition'")
                 db.execSQL("ALTER TABLE books ADD COLUMN isbnOrIdentifier TEXT NOT NULL DEFAULT ''")
                 db.execSQL("ALTER TABLE books ADD COLUMN publicationYear TEXT NOT NULL DEFAULT '2026'")
-                db.execSQL("ALTER TABLE books ADD COLUMN publicationInfo TEXT NOT NULL DEFAULT 'VidyaKosha Digital Archival Press'")
+                db.execSQL("ALTER TABLE books ADD COLUMN publicationInfo TEXT NOT NULL DEFAULT 'Lipi Digital Archival Press'")
                 db.execSQL("ALTER TABLE books ADD COLUMN customMetadataJson TEXT NOT NULL DEFAULT '{}'")
                 db.execSQL("ALTER TABLE books ADD COLUMN publicationStatus TEXT NOT NULL DEFAULT 'PUBLISHED'")
                 db.execSQL("ALTER TABLE books ADD COLUMN searchIndexStatus TEXT NOT NULL DEFAULT 'INDEXED'")
@@ -701,7 +719,7 @@ abstract class AppDatabase : RoomDatabase() {
                     AppDatabase::class.java,
                     "polyglot_enterprise_corpus_db"
                 )
-                    .addMigrations(MIGRATION_5_6)
+                    .addMigrations(MIGRATION_5_6, MIGRATION_6_7)
                     .fallbackToDestructiveMigration(true)
                     .build()
                 INSTANCE = instance

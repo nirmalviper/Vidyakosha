@@ -1,7 +1,7 @@
 {
-  "name": "vidyakosha-coolify-backend",
+  "name": "lipi-coolify-backend",
   "version": "1.0.0",
-  "description": "VidyaKosha PostgreSQL Backend API, Superadmin RBAC, Password Reset & APK Distribution Server for Coolify",
+  "description": "Lipi PostgreSQL Backend API, Superadmin RBAC, Password Reset & APK Distribution Server for Coolify",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"

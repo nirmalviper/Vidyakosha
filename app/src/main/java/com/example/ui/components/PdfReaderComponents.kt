@@ -85,6 +85,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -100,6 +101,7 @@ import com.example.data.local.BilingualParagraphItem
 import com.example.data.local.BookEntity
 import com.example.data.local.BookRightsCategory
 import com.example.data.local.ChapterEntity
+import com.example.data.local.ContinuousSectionBlock
 import com.example.data.local.LanguageDescriptor
 import com.example.data.local.LanguageRegistry
 import com.example.data.local.OcrCorrectionAuditEntity
@@ -110,6 +112,7 @@ import com.example.data.local.TranslationDiscoveryStatus
 import com.example.data.local.TranslationReviewStatus
 import com.example.ui.PendingContributorAction
 import com.example.ui.ReaderDisplayMode
+import com.example.ui.theme.AppThemeMode
 import com.example.ui.theme.LoraSerif
 import com.example.ui.theme.ReaderCanvasNight
 import com.example.ui.theme.ReaderCanvasPaper
@@ -136,6 +139,8 @@ fun BilingualBookReaderPane(
     activeChapter: ChapterEntity?,
     activeSection: SectionEntity?,
     paragraphs: List<BilingualParagraphItem>,
+    continuousBlocks: List<ContinuousSectionBlock> = emptyList(),
+    onViewportPositionChanged: (Long, Long) -> Unit = { _, _ -> },
     discoveryStatus: TranslationDiscoveryStatus?,
     cachedLanguages: List<String>,
     ocrAuditsForBook: List<OcrCorrectionAuditEntity>,
@@ -172,14 +177,11 @@ fun BilingualBookReaderPane(
     isFocusModeEnabled: Boolean = false,
     onToggleFocusMode: () -> Unit = {},
     userTopLanguages: List<LanguageDescriptor> = LanguageRegistry.parseTopThreeLanguages(null),
-    onOpenLanguageSettings: () -> Unit = {}
+    onOpenLanguageSettings: () -> Unit = {},
+    appThemeMode: AppThemeMode = AppThemeMode.WHITE,
+    onSelectAppThemeMode: (AppThemeMode) -> Unit = {}
 ) {
     val listState = rememberLazyListState()
-    val systemDark = isSystemInDarkTheme()
-
-    var canvasTone by rememberSaveable {
-        mutableStateOf(if (systemDark) EReaderCanvasTone.NIGHT else EReaderCanvasTone.PAPER)
-    }
     var focusChromeVisible by rememberSaveable { mutableStateOf(false) }
 
     var showTocDialog by remember { mutableStateOf(false) }
@@ -191,45 +193,143 @@ fun BilingualBookReaderPane(
     var reportingIssueTarget by remember { mutableStateOf<BilingualParagraphItem?>(null) }
     var correctingOcrTarget by remember { mutableStateOf<BilingualParagraphItem?>(null) }
     var comparingVersionsTarget by remember { mutableStateOf<BilingualParagraphItem?>(null) }
+    var tocJumpCounter by remember { mutableStateOf(0) }
 
-    LaunchedEffect(activeSection?.id) {
-        listState.scrollToItem(0)
-    }
-
-    val isAtBottom by remember {
-        derivedStateOf {
-            val layoutInfo = listState.layoutInfo
-            val totalItems = layoutInfo.totalItemsCount
-            if (totalItems == 0) false
-            else {
-                val lastVisible = layoutInfo.visibleItemsInfo.lastOrNull()
-                lastVisible != null && lastVisible.index >= totalItems - 1
-            }
+    LaunchedEffect(book.id, tocJumpCounter) {
+        if (tocJumpCounter > 0) {
+            listState.scrollToItem(0)
         }
     }
-
-    var upwardPullAccumulator by remember { mutableFloatStateOf(0f) }
 
     val activeSectionIndex = remember(sections, activeSection) {
         sections.indexOfFirst { it.id == activeSection?.id }.coerceAtLeast(0)
     }
-    val hasNextSection = activeSectionIndex < sections.size - 1
-    val hasPrevSection = activeSectionIndex > 0
 
-    val canvasBg = when (canvasTone) {
-        EReaderCanvasTone.PAPER -> ReaderCanvasPaper
-        EReaderCanvasTone.SEPIA -> ReaderCanvasSepia
-        EReaderCanvasTone.NIGHT -> ReaderCanvasNight
+    val effectiveBlocks = remember(continuousBlocks, chapters, sections, activeChapter, activeSection, paragraphs) {
+        if (continuousBlocks.isNotEmpty()) {
+            continuousBlocks
+        } else if (activeSection != null) {
+            val fallbackChapter = activeChapter ?: chapters.firstOrNull() ?: ChapterEntity(
+                id = activeSection.chapterId,
+                bookId = book.id,
+                chapterOrder = 1,
+                title = book.title,
+                summary = "",
+                startPage = activeSection.startPage,
+                endPage = activeSection.endPage
+            )
+            listOf(
+                ContinuousSectionBlock(
+                    chapter = fallbackChapter,
+                    isFirstSectionOfChapter = true,
+                    section = activeSection,
+                    globalSectionIndex = activeSectionIndex,
+                    totalBookSections = sections.size.coerceAtLeast(1),
+                    paragraphs = paragraphs,
+                    isFullyTranslated = paragraphs.isNotEmpty() && paragraphs.all { it.activeTranslation != null }
+                )
+            )
+        } else {
+            emptyList()
+        }
     }
-    val canvasText = when (canvasTone) {
-        EReaderCanvasTone.PAPER -> ReaderTextPaper
-        EReaderCanvasTone.SEPIA -> ReaderTextSepia
-        EReaderCanvasTone.NIGHT -> ReaderTextNight
+
+    val firstLoadedSectionId = effectiveBlocks.firstOrNull()?.section?.id ?: activeSection?.id
+    val lastLoadedSectionId = effectiveBlocks.lastOrNull()?.section?.id ?: activeSection?.id
+
+    val hasPreviousUnloadedSection = remember(sections, firstLoadedSectionId) {
+        val idx = sections.indexOfFirst { it.id == firstLoadedSectionId }
+        idx > 0
     }
-    val canvasMuted = when (canvasTone) {
-        EReaderCanvasTone.PAPER -> ReaderMutedPaper
-        EReaderCanvasTone.SEPIA -> ReaderMutedSepia
-        EReaderCanvasTone.NIGHT -> ReaderMutedNight
+    val hasNextUnloadedSection = remember(sections, lastLoadedSectionId) {
+        val idx = sections.indexOfFirst { it.id == lastLoadedSectionId }
+        idx >= 0 && idx < sections.lastIndex
+    }
+    val isLoadingPreviousSection = false
+
+    // Map each lazy list item key to (sectionId, paragraphId) for viewport tracking
+    val paragraphKeyLookup = remember(effectiveBlocks) {
+        buildMap<String, Pair<Long, Long>> {
+            effectiveBlocks.forEach { block ->
+                block.paragraphs.forEach { item ->
+                    put("para_${block.section.id}_${item.paragraph.id}", block.section.id to item.paragraph.id)
+                }
+            }
+        }
+    }
+
+    // Track scroll position to progressively load next/previous sections and keep active section synced
+    LaunchedEffect(listState, effectiveBlocks, hasPreviousUnloadedSection, hasNextUnloadedSection) {
+        snapshotFlow {
+            val layoutInfo = listState.layoutInfo
+            val visibleItems = layoutInfo.visibleItemsInfo
+            val totalItems = layoutInfo.totalItemsCount
+            Triple(visibleItems, totalItems, listState.firstVisibleItemIndex)
+        }.collect { (visibleItems, totalItems, firstIndex) ->
+            if (visibleItems.isEmpty() || totalItems == 0) return@collect
+            val lastVisibleIndex = visibleItems.last().index
+            val nearBottom = hasNextUnloadedSection && (lastVisibleIndex >= (totalItems - 4).coerceAtLeast(0))
+            val nearTop = hasPreviousUnloadedSection && (firstIndex <= 1) && listState.canScrollBackward
+
+            // Identify the primary visible paragraph in the upper half of the viewport
+            val primaryItem = visibleItems.firstOrNull { info ->
+                (info.key as? String)?.startsWith("para_") == true
+            }
+            val matchedPair = (primaryItem?.key as? String)?.let { paragraphKeyLookup[it] }
+            if (matchedPair != null) {
+                onViewportPositionChanged(matchedPair.first, matchedPair.second)
+            }
+
+            if (nearBottom) {
+                onAdvanceNextSectionSeamless()
+            } else if (nearTop) {
+                onPreviousSectionSeamless()
+            }
+        }
+    }
+
+    // During Continuous Listen Mode, smoothly keep the active spoken paragraph in view
+    LaunchedEffect(speakingParagraphId, isPlayingFullSectionAudio, effectiveBlocks) {
+        if (isPlayingFullSectionAudio && speakingParagraphId != null) {
+            val visibleKeys = listState.layoutInfo.visibleItemsInfo.mapNotNull { it.key as? String }
+            val targetSuffix = "_$speakingParagraphId"
+            val alreadyVisible = visibleKeys.any { it.startsWith("para_") && it.endsWith(targetSuffix) }
+            if (!alreadyVisible) {
+                var flatIndex = 0
+                if (hasPreviousUnloadedSection) flatIndex += 1
+                var foundIndex = -1
+                for (block in effectiveBlocks) {
+                    flatIndex += 1 // Section transition header item
+                    for (item in block.paragraphs) {
+                        if (item.paragraph.id == speakingParagraphId) {
+                            foundIndex = flatIndex
+                            break
+                        }
+                        flatIndex += 1
+                    }
+                    if (foundIndex >= 0) break
+                }
+                if (foundIndex >= 0) {
+                    runCatching { listState.animateScrollToItem(foundIndex) }
+                }
+            }
+        }
+    }
+
+    val canvasBg = when (appThemeMode) {
+        AppThemeMode.WHITE -> ReaderCanvasPaper
+        AppThemeMode.SEPIA -> ReaderCanvasSepia
+        AppThemeMode.DARK -> ReaderCanvasNight
+    }
+    val canvasText = when (appThemeMode) {
+        AppThemeMode.WHITE -> ReaderTextPaper
+        AppThemeMode.SEPIA -> ReaderTextSepia
+        AppThemeMode.DARK -> ReaderTextNight
+    }
+    val canvasMuted = when (appThemeMode) {
+        AppThemeMode.WHITE -> ReaderMutedPaper
+        AppThemeMode.SEPIA -> ReaderMutedSepia
+        AppThemeMode.DARK -> ReaderMutedNight
     }
 
     val showTopReaderBar = !isFocusModeEnabled || focusChromeVisible
@@ -238,22 +338,6 @@ fun BilingualBookReaderPane(
         modifier = Modifier
             .fillMaxSize()
             .background(canvasBg)
-            .pointerInput(activeSection?.id, isAtBottom, hasNextSection) {
-                detectVerticalDragGestures(
-                    onDragEnd = {
-                        if (upwardPullAccumulator < -150f && isAtBottom && hasNextSection) {
-                            onAdvanceNextSectionSeamless()
-                        }
-                        upwardPullAccumulator = 0f
-                    },
-                    onDragCancel = { upwardPullAccumulator = 0f },
-                    onVerticalDrag = { _, dragAmount ->
-                        if (isAtBottom && dragAmount < 0f) {
-                            upwardPullAccumulator += dragAmount
-                        }
-                    }
-                )
-            }
     ) {
         Column(modifier = Modifier.fillMaxSize()) {
             // 1. Minimal, Calm E-Reader Header Bar (Automatically hidden in Focus Mode unless toggled)
@@ -275,36 +359,43 @@ fun BilingualBookReaderPane(
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             // Chapter / Section TOC Trigger
-                            Row(
+                            Surface(
+                                shape = RoundedCornerShape(10.dp),
+                                color = canvasText.copy(alpha = 0.05f),
                                 modifier = Modifier
                                     .weight(1f)
-                                    .clip(RoundedCornerShape(8.dp))
+                                    .padding(end = 8.dp)
+                                    .clip(RoundedCornerShape(10.dp))
                                     .clickable { showTocDialog = true }
-                                    .padding(vertical = 8.dp, horizontal = 4.dp)
-                                    .testTag("open_toc_button"),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                    .testTag("open_toc_button")
                             ) {
-                                Icon(
-                                    Icons.AutoMirrored.Filled.MenuBook,
-                                    contentDescription = "Table of Contents",
-                                    tint = canvasMuted,
-                                    modifier = Modifier.size(16.dp)
-                                )
-                                Text(
-                                    text = "${activeSection?.heading ?: book.title}  •  ${activeSectionIndex + 1}/${sections.size.coerceAtLeast(1)}",
-                                    style = MaterialTheme.typography.labelLarge,
-                                    color = canvasText,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                    modifier = Modifier.weight(1f, fill = false)
-                                )
-                                Icon(
-                                    Icons.Default.KeyboardArrowDown,
-                                    contentDescription = null,
-                                    tint = canvasMuted,
-                                    modifier = Modifier.size(16.dp)
-                                )
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    Icon(
+                                        Icons.AutoMirrored.Filled.MenuBook,
+                                        contentDescription = "Table of Contents",
+                                        tint = canvasMuted,
+                                        modifier = Modifier.size(15.dp)
+                                    )
+                                    Text(
+                                        text = "${activeSection?.heading ?: book.title} • ${activeSectionIndex + 1}/${sections.size.coerceAtLeast(1)}",
+                                        style = MaterialTheme.typography.labelMedium,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = canvasText,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier.weight(1f, fill = false)
+                                    )
+                                    Icon(
+                                        Icons.Default.KeyboardArrowDown,
+                                        contentDescription = null,
+                                        tint = canvasMuted,
+                                        modifier = Modifier.size(15.dp)
+                                    )
+                                }
                             }
 
                             // Essential Reader Controls: Language, Audio, Aa Appearance, Focus Mode
@@ -314,10 +405,10 @@ fun BilingualBookReaderPane(
                             ) {
                                 // Subtle Target Language Trigger
                                 Surface(
-                                    shape = RoundedCornerShape(8.dp),
-                                    color = canvasText.copy(alpha = 0.06f),
+                                    shape = RoundedCornerShape(10.dp),
+                                    color = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f),
                                     modifier = Modifier
-                                        .clip(RoundedCornerShape(8.dp))
+                                        .clip(RoundedCornerShape(10.dp))
                                         .clickable { showLanguagePickerDialog = true }
                                         .testTag("reader_language_picker_button")
                                 ) {
@@ -326,10 +417,16 @@ fun BilingualBookReaderPane(
                                         verticalAlignment = Alignment.CenterVertically,
                                         horizontalArrangement = Arrangement.spacedBy(4.dp)
                                     ) {
+                                        Icon(
+                                            Icons.Default.Translate,
+                                            contentDescription = null,
+                                            tint = MaterialTheme.colorScheme.primary,
+                                            modifier = Modifier.size(13.dp)
+                                        )
                                         Text(
                                             text = selectedLanguage.name,
                                             style = MaterialTheme.typography.labelMedium,
-                                            fontWeight = FontWeight.Medium,
+                                            fontWeight = FontWeight.SemiBold,
                                             color = canvasText
                                         )
                                         Icon(
@@ -431,6 +528,86 @@ fun BilingualBookReaderPane(
                                 }
                             }
                         }
+
+                        // Continuous Listening Active Banner (allows switching Original/Translation or stopping)
+                        if (isPlayingFullSectionAudio) {
+                            Surface(
+                                color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.85f),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .testTag("continuous_listening_active_banner")
+                            ) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 16.dp, vertical = 6.dp),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                        modifier = Modifier.weight(1f)
+                                    ) {
+                                        Icon(
+                                            Icons.AutoMirrored.Filled.VolumeUp,
+                                            contentDescription = null,
+                                            tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                                            modifier = Modifier.size(16.dp)
+                                        )
+                                        Text(
+                                            text = if (isSpeakingOriginal) {
+                                                "Continuous Listen • Original (${book.originalLanguage}) • Auto-advances sections"
+                                            } else {
+                                                "Continuous Listen • ${selectedLanguage.name} • Auto-advances sections"
+                                            },
+                                            style = MaterialTheme.typography.labelSmall,
+                                            fontWeight = FontWeight.SemiBold,
+                                            color = MaterialTheme.colorScheme.onPrimaryContainer,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                    }
+
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                    ) {
+                                        TextButton(
+                                            onClick = { onToggleFullSectionAudio(isSpeakingOriginal) },
+                                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                                            modifier = Modifier.testTag("switch_continuous_audio_stream_button")
+                                        ) {
+                                            Text(
+                                                text = if (isSpeakingOriginal) "Switch to ${selectedLanguage.name}" else "Switch to Original",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                fontWeight = FontWeight.SemiBold,
+                                                color = MaterialTheme.colorScheme.onPrimaryContainer
+                                            )
+                                        }
+                                        TextButton(
+                                            onClick = { onToggleFullSectionAudio(!isSpeakingOriginal) },
+                                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                                            modifier = Modifier.testTag("stop_continuous_audio_button")
+                                        ) {
+                                            Icon(
+                                                Icons.Default.Stop,
+                                                contentDescription = "Stop Continuous Listening",
+                                                tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                                                modifier = Modifier.size(14.dp)
+                                            )
+                                            Spacer(modifier = Modifier.width(3.dp))
+                                            Text(
+                                                text = "Stop",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                fontWeight = FontWeight.Bold,
+                                                color = MaterialTheme.colorScheme.onPrimaryContainer
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -465,171 +642,296 @@ fun BilingualBookReaderPane(
                     ),
                     verticalArrangement = Arrangement.spacedBy(28.dp)
                 ) {
-                    // Book & Section Literary Heading (Like a printed chapter opening)
-                    item(key = "section_header_${activeSection?.id}") {
-                        Column(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable(
-                                    indication = null,
-                                    interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
-                                ) {
-                                    if (isFocusModeEnabled) {
-                                        focusChromeVisible = !focusChromeVisible
-                                    }
+                    // Progressive Upward Loading Indicator (when prior sections exist in the chapter/book)
+                    if (hasPreviousUnloadedSection) {
+                        item(key = "progressive_previous_section_loader") {
+                            LaunchedEffect(firstLoadedSectionId) {
+                                if (listState.canScrollBackward) {
+                                    onPreviousSectionSeamless()
                                 }
-                                .padding(bottom = 12.dp),
-                            verticalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            Text(
-                                text = (activeChapter?.title ?: book.title).uppercase(),
-                                style = MaterialTheme.typography.labelMedium,
-                                letterSpacing = 1.2.sp,
-                                color = canvasMuted
-                            )
-                            Text(
-                                text = activeSection?.heading ?: "Section",
-                                fontFamily = LoraSerif,
-                                fontWeight = FontWeight.SemiBold,
-                                fontSize = (24f * fontScaleMultiplier).sp,
-                                lineHeight = (32f * fontScaleMultiplier).sp,
-                                color = canvasText
-                            )
-                            if (!activeChapter?.summary.isNullOrBlank()) {
+                            }
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 4.dp),
+                                horizontalArrangement = Arrangement.Center,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                if (isLoadingPreviousSection) {
+                                    LinearProgressIndicator(
+                                        modifier = Modifier
+                                            .width(96.dp)
+                                            .height(2.dp),
+                                        color = canvasMuted.copy(alpha = 0.6f),
+                                        trackColor = Color.Transparent
+                                    )
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                }
                                 Text(
-                                    text = activeChapter?.summary.orEmpty(),
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    color = canvasMuted,
-                                    lineHeight = 22.sp
+                                    text = if (isLoadingPreviousSection) {
+                                        "Loading previous section…"
+                                    } else {
+                                        "Scroll up to load earlier passages"
+                                    },
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = canvasMuted.copy(alpha = 0.7f)
                                 )
                             }
-                            Spacer(modifier = Modifier.height(4.dp))
-                            HorizontalDivider(
-                                modifier = Modifier.width(64.dp),
-                                thickness = 1.5.dp,
-                                color = canvasText.copy(alpha = 0.2f)
+                        }
+                    }
+
+                    // Render Progressive Window of Continuous Section Blocks seamlessly
+                    effectiveBlocks.forEachIndexed { blockIdx, block ->
+                        val previousChapterId = effectiveBlocks.getOrNull(blockIdx - 1)?.chapter?.id
+                        val isNewChapter = blockIdx == 0 || block.chapter?.id != previousChapterId
+
+                        item(key = "section_header_${block.section.id}") {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable(
+                                        indication = null,
+                                        interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
+                                    ) {
+                                        if (isFocusModeEnabled) {
+                                            focusChromeVisible = !focusChromeVisible
+                                        }
+                                    }
+                                    .padding(
+                                        top = if (blockIdx == 0) 0.dp else 16.dp,
+                                        bottom = 12.dp
+                                    ),
+                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                if (blockIdx > 0) {
+                                    // Subtle literary ornamental divider between sections so transitions feel continuous
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(bottom = 12.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.Center
+                                    ) {
+                                        HorizontalDivider(
+                                            modifier = Modifier.weight(1f),
+                                            color = canvasText.copy(alpha = 0.08f)
+                                        )
+                                        Text(
+                                            text = "  ✦  ",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = canvasMuted.copy(alpha = 0.55f)
+                                        )
+                                        HorizontalDivider(
+                                            modifier = Modifier.weight(1f),
+                                            color = canvasText.copy(alpha = 0.08f)
+                                        )
+                                    }
+                                }
+
+                                Text(
+                                    text = if (isNewChapter) {
+                                        "${block.chapter.title.uppercase()} • P. ${block.section.startPage}"
+                                    } else {
+                                        "SECTION ${block.section.sectionOrder} • P. ${block.section.startPage}"
+                                    },
+                                    style = MaterialTheme.typography.labelMedium,
+                                    letterSpacing = 1.2.sp,
+                                    color = canvasMuted
+                                )
+                                Text(
+                                    text = block.section.heading,
+                                    fontFamily = LoraSerif,
+                                    fontWeight = FontWeight.SemiBold,
+                                    fontSize = (if (blockIdx == 0) (24f * fontScaleMultiplier) else (20f * fontScaleMultiplier)).sp,
+                                    lineHeight = (if (blockIdx == 0) (32f * fontScaleMultiplier) else (28f * fontScaleMultiplier)).sp,
+                                    color = canvasText
+                                )
+                                if (isNewChapter && block.chapter.summary.isNotBlank()) {
+                                    Text(
+                                        text = block.chapter.summary,
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        color = canvasMuted,
+                                        lineHeight = 22.sp
+                                    )
+                                }
+                                Spacer(modifier = Modifier.height(4.dp))
+                                HorizontalDivider(
+                                    modifier = Modifier.width(64.dp),
+                                    thickness = 1.5.dp,
+                                    color = canvasText.copy(alpha = 0.2f)
+                                )
+
+                                val missingTranslationsCount = block.paragraphs.count { it.activeTranslation == null }
+                                if (missingTranslationsCount > 0 && displayMode != ReaderDisplayMode.ORIGINAL_ONLY) {
+                                    Surface(
+                                        shape = RoundedCornerShape(12.dp),
+                                        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.08f),
+                                        border = BorderStroke(0.5.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.25f)),
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(top = 8.dp)
+                                    ) {
+                                        Row(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .padding(horizontal = 14.dp, vertical = 10.dp),
+                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Column(
+                                                modifier = Modifier.weight(1f),
+                                                verticalArrangement = Arrangement.spacedBy(2.dp)
+                                            ) {
+                                                Text(
+                                                    text = "$missingTranslationsCount of ${block.paragraphs.size} passages untranslated in ${selectedLanguage.name}",
+                                                    style = MaterialTheme.typography.labelMedium,
+                                                    fontWeight = FontWeight.SemiBold,
+                                                    color = canvasText
+                                                )
+                                                Text(
+                                                    text = "Reuses Shared Repo & Local NMT first • No AI key required",
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    color = canvasMuted
+                                                )
+                                            }
+                                            Spacer(modifier = Modifier.width(10.dp))
+                                            Button(
+                                                onClick = { onTranslateSection(false) },
+                                                enabled = !isTranslatingSection,
+                                                shape = RoundedCornerShape(10.dp),
+                                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                                                modifier = Modifier.testTag(
+                                                    if (blockIdx == 0) "section_banner_translate_button"
+                                                    else "section_banner_translate_button_${block.section.id}"
+                                                )
+                                            ) {
+                                                Icon(
+                                                    Icons.Default.Translate,
+                                                    contentDescription = null,
+                                                    modifier = Modifier.size(14.dp)
+                                                )
+                                                Spacer(modifier = Modifier.width(6.dp))
+                                                Text(
+                                                    text = if (isTranslatingSection) "Translating..." else "Translate All",
+                                                    style = MaterialTheme.typography.labelMedium,
+                                                    fontWeight = FontWeight.SemiBold
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // Clean, Unboxed Literary Passages in this Section
+                        items(
+                            items = block.paragraphs,
+                            key = { "para_${block.section.id}_${it.paragraph.id}" }
+                        ) { item ->
+                            val isExpanded = expandedParagraphId == item.paragraph.id
+                            LiteraryPassageBlock(
+                                item = item,
+                                selectedLanguage = selectedLanguage,
+                                displayMode = displayMode,
+                                useSideBySideColumns = useSideBySideColumns,
+                                fontScaleMultiplier = fontScaleMultiplier,
+                                showTransliteration = showTransliteration,
+                                showWordByWordBreakdown = showWordByWordBreakdown,
+                                canvasText = canvasText,
+                                canvasMuted = canvasMuted,
+                                isExpanded = isExpanded,
+                                isSpeakingThisOriginal = speakingParagraphId == item.paragraph.id && isSpeakingOriginal,
+                                isSpeakingThisTranslation = speakingParagraphId == item.paragraph.id && !isSpeakingOriginal,
+                                onToggleExpandActions = {
+                                    expandedParagraphId = if (isExpanded) null else item.paragraph.id
+                                },
+                                onSpeakOriginal = {
+                                    onSpeakParagraph(
+                                        item.paragraph.id,
+                                        item.paragraph.originalText,
+                                        item.paragraph.originalLanguage,
+                                        true
+                                    )
+                                },
+                                onSpeakTranslation = {
+                                    val transText = item.activeTranslation?.translatedText ?: return@LiteraryPassageBlock
+                                    onSpeakParagraph(
+                                        item.paragraph.id,
+                                        transText,
+                                        selectedLanguage.name,
+                                        false
+                                    )
+                                },
+                                onToggleBookmark = { onToggleBookmark(item.paragraph) },
+                                onOpenHumanReviewModal = { editingReviewTarget = item },
+                                onOpenReportIssueModal = { reportingIssueTarget = item },
+                                onOpenOcrCorrectionModal = { correctingOcrTarget = item },
+                                onOpenVersionComparisonModal = { comparingVersionsTarget = item },
+                                onTranslateMissing = { onTranslateSection(false) }
                             )
                         }
                     }
 
-                    // Clean, Unboxed Literary Passages
-                    items(
-                        items = paragraphs,
-                        key = { it.paragraph.id }
-                    ) { item ->
-                        val isExpanded = expandedParagraphId == item.paragraph.id
-                        LiteraryPassageBlock(
-                            item = item,
-                            selectedLanguage = selectedLanguage,
-                            displayMode = displayMode,
-                            useSideBySideColumns = useSideBySideColumns,
-                            fontScaleMultiplier = fontScaleMultiplier,
-                            showTransliteration = showTransliteration,
-                            showWordByWordBreakdown = showWordByWordBreakdown,
-                            canvasText = canvasText,
-                            canvasMuted = canvasMuted,
-                            isExpanded = isExpanded,
-                            isSpeakingThisOriginal = speakingParagraphId == item.paragraph.id && isSpeakingOriginal,
-                            isSpeakingThisTranslation = speakingParagraphId == item.paragraph.id && !isSpeakingOriginal,
-                            onToggleExpandActions = {
-                                expandedParagraphId = if (isExpanded) null else item.paragraph.id
-                            },
-                            onSpeakOriginal = {
-                                onSpeakParagraph(
-                                    item.paragraph.id,
-                                    item.paragraph.originalText,
-                                    item.paragraph.originalLanguage,
-                                    true
-                                )
-                            },
-                            onSpeakTranslation = {
-                                val transText = item.activeTranslation?.translatedText ?: return@LiteraryPassageBlock
-                                onSpeakParagraph(
-                                    item.paragraph.id,
-                                    transText,
-                                    selectedLanguage.name,
-                                    false
-                                )
-                            },
-                            onToggleBookmark = { onToggleBookmark(item.paragraph) },
-                            onOpenHumanReviewModal = { editingReviewTarget = item },
-                            onOpenReportIssueModal = { reportingIssueTarget = item },
-                            onOpenOcrCorrectionModal = { correctingOcrTarget = item },
-                            onOpenVersionComparisonModal = { comparingVersionsTarget = item },
-                            onTranslateMissing = { onTranslateSection(false) }
-                        )
-                    }
+                    // Progressive Continuous Reading Footer (automatically loads next section on scroll without manual buttons)
+                    item(key = "continuous_reading_progressive_footer") {
+                        LaunchedEffect(hasNextUnloadedSection, effectiveBlocks.size) {
+                            if (hasNextUnloadedSection) {
+                                onAdvanceNextSectionSeamless()
+                            }
+                        }
 
-                    // Minimal E-Reader Page Footer (Seamless Next / Previous Section)
-                    item(key = "continuous_footer_${activeSection?.id}") {
                         Column(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .padding(top = 20.dp, bottom = 28.dp),
                             horizontalAlignment = Alignment.CenterHorizontally,
-                            verticalArrangement = Arrangement.spacedBy(16.dp)
+                            verticalArrangement = Arrangement.spacedBy(12.dp)
                         ) {
                             HorizontalDivider(color = canvasText.copy(alpha = 0.1f))
 
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
+                            if (hasNextUnloadedSection) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    LinearProgressIndicator(
+                                        modifier = Modifier
+                                            .width(84.dp)
+                                            .height(2.dp),
+                                        color = canvasMuted.copy(alpha = 0.6f),
+                                        trackColor = Color.Transparent
+                                    )
+                                    Text(
+                                        text = "Continuing seamlessly into next section…",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = canvasMuted.copy(alpha = 0.75f)
+                                    )
+                                }
+                            } else {
+                                Text(
+                                    text = "✦  End of Chapter / Book  ✦",
+                                    fontFamily = LoraSerif,
+                                    fontStyle = FontStyle.Italic,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = canvasMuted.copy(alpha = 0.85f)
+                                )
                                 TextButton(
-                                    onClick = onPreviousSectionSeamless,
-                                    enabled = hasPrevSection,
-                                    modifier = Modifier
-                                        .minimumInteractiveComponentSize()
-                                        .testTag("previous_section_button")
+                                    onClick = { showTocDialog = true },
+                                    modifier = Modifier.testTag("colophon_open_toc_button")
                                 ) {
                                     Icon(
-                                        Icons.AutoMirrored.Filled.ArrowBack,
+                                        Icons.AutoMirrored.Filled.MenuBook,
                                         contentDescription = null,
-                                        tint = if (hasPrevSection) canvasText else canvasMuted.copy(alpha = 0.4f),
-                                        modifier = Modifier.size(16.dp)
+                                        tint = canvasText,
+                                        modifier = Modifier.size(15.dp)
                                     )
                                     Spacer(modifier = Modifier.width(6.dp))
                                     Text(
-                                        "Previous",
-                                        color = if (hasPrevSection) canvasText else canvasMuted.copy(alpha = 0.4f)
+                                        text = "Browse Table of Contents",
+                                        style = MaterialTheme.typography.labelMedium,
+                                        color = canvasText
                                     )
                                 }
-
-                                Text(
-                                    text = "Page ${activeSection?.startPage ?: 1}  •  Section ${activeSectionIndex + 1} of ${sections.size.coerceAtLeast(1)}",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = canvasMuted
-                                )
-
-                                TextButton(
-                                    onClick = onAdvanceNextSectionSeamless,
-                                    enabled = hasNextSection,
-                                    modifier = Modifier
-                                        .minimumInteractiveComponentSize()
-                                        .testTag("next_section_button")
-                                ) {
-                                    Text(
-                                        "Next Section",
-                                        color = if (hasNextSection) canvasText else canvasMuted.copy(alpha = 0.4f),
-                                        fontWeight = FontWeight.SemiBold
-                                    )
-                                    Spacer(modifier = Modifier.width(6.dp))
-                                    Icon(
-                                        Icons.AutoMirrored.Filled.ArrowForward,
-                                        contentDescription = null,
-                                        tint = if (hasNextSection) canvasText else canvasMuted.copy(alpha = 0.4f),
-                                        modifier = Modifier.size(16.dp)
-                                    )
-                                }
-                            }
-
-                            if (hasNextSection) {
-                                Text(
-                                    text = "Swipe up to continue to the next section automatically",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = canvasMuted.copy(alpha = 0.75f)
-                                )
                             }
                         }
                     }
@@ -736,10 +1038,10 @@ fun BilingualBookReaderPane(
                         }
                     }
 
-                    // 2. Page Theme (Paper, Warm Sepia, Night Ink)
+                    // 2. App & Page Theme (White, Sepia, Dark)
                     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                         Text(
-                            text = "Page Theme",
+                            text = "App & Page Theme",
                             style = MaterialTheme.typography.labelMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -747,11 +1049,11 @@ fun BilingualBookReaderPane(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            EReaderCanvasTone.entries.forEach { tone ->
+                            AppThemeMode.entries.forEach { mode ->
                                 FilterChip(
-                                    selected = canvasTone == tone,
-                                    onClick = { canvasTone = tone },
-                                    label = { Text(tone.label) },
+                                    selected = appThemeMode == mode,
+                                    onClick = { onSelectAppThemeMode(mode) },
+                                    label = { Text(mode.label, maxLines = 1, softWrap = false) },
                                     modifier = Modifier.weight(1f)
                                 )
                             }
@@ -850,7 +1152,7 @@ fun BilingualBookReaderPane(
                         ) {
                             Icon(Icons.Default.Translate, contentDescription = null, modifier = Modifier.size(16.dp))
                             Spacer(modifier = Modifier.width(6.dp))
-                            Text("Translate Section", style = MaterialTheme.typography.labelMedium)
+                            Text("Translate (Local / Repo)", style = MaterialTheme.typography.labelMedium)
                         }
 
                         OutlinedButton(
@@ -880,7 +1182,7 @@ fun BilingualBookReaderPane(
                     ) {
                         Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
                         Spacer(modifier = Modifier.width(6.dp))
-                        Text("Generate New AI Translation Version")
+                        Text("Retranslate Section (Local NMT or Optional AI)")
                     }
                 }
             },
@@ -933,6 +1235,7 @@ fun BilingualBookReaderPane(
                                     .fillMaxWidth()
                                     .clip(RoundedCornerShape(8.dp))
                                     .clickable {
+                                        tocJumpCounter += 1
                                         onSelectSection(sec.id)
                                         showTocDialog = false
                                     }
@@ -1624,7 +1927,7 @@ private fun LiteraryPassageBlock(
                     }
                 }
                 else -> {
-                    // Clean stacked bilingual flow without heavy boxes
+                    // Clean stacked bilingual flow with distinct editorial accent bar for translation
                     Text(
                         text = p.originalText,
                         fontFamily = LoraSerif,
@@ -1634,14 +1937,38 @@ private fun LiteraryPassageBlock(
                     )
 
                     if (trans != null) {
-                        Text(
-                            text = trans.translatedText,
-                            fontFamily = LoraSerif,
-                            fontSize = (17f * fontScaleMultiplier).sp,
-                            lineHeight = (28f * fontScaleMultiplier).sp,
-                            color = canvasText.copy(alpha = 0.86f),
-                            modifier = Modifier.padding(top = 4.dp)
-                        )
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(top = 6.dp)
+                                .clip(RoundedCornerShape(topEnd = 10.dp, bottomEnd = 10.dp))
+                                .background(canvasText.copy(alpha = 0.035f))
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .width(3.dp)
+                                    .height(28.dp)
+                                    .padding(top = 6.dp)
+                                    .background(
+                                        MaterialTheme.colorScheme.primary.copy(alpha = 0.65f),
+                                        RoundedCornerShape(2.dp)
+                                    )
+                            )
+                            Column(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                                verticalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                Text(
+                                    text = trans.translatedText,
+                                    fontFamily = LoraSerif,
+                                    fontSize = (17f * fontScaleMultiplier).sp,
+                                    lineHeight = (28f * fontScaleMultiplier).sp,
+                                    color = canvasText.copy(alpha = 0.90f)
+                                )
+                            }
+                        }
                     } else {
                         InlineMissingTranslationPrompt(
                             languageName = selectedLanguage.name,
@@ -1797,7 +2124,7 @@ fun ContributorLicenseAgreementDialog(
         },
         title = {
             Text(
-                text = "VidyaKosha Derivative & Translation Licence",
+                text = "Lipi Derivative & Translation Licence",
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.SemiBold
             )
@@ -1812,7 +2139,7 @@ fun ContributorLicenseAgreementDialog(
                     color = MaterialTheme.colorScheme.onSurface
                 )
                 Text(
-                    text = "Zero-Host Peer-to-Peer Policy: VidyaKosha never hosts or stores original restricted PDF/EPUB files. By converting or requesting this translation (${pendingAction.targetLanguage}), you agree that VidyaKosha owns and permanently retains the structured OCR segments and resulting translation derivatives in the VidyaKosha Knowledge Commons.",
+                    text = "Zero-Host Peer-to-Peer Policy: Lipi never hosts or stores original restricted PDF/EPUB files. By converting or requesting this translation (${pendingAction.targetLanguage}), you agree that Lipi owns and permanently retains the structured OCR segments and resulting translation derivatives in the Lipi Knowledge Commons.",
                     style = MaterialTheme.typography.bodyMedium
                 )
                 Surface(
@@ -1826,7 +2153,7 @@ fun ContributorLicenseAgreementDialog(
                     ) {
                         Text(
                             text = if (isShareable) {
-                                "VidyaKosha Derivative Asset (${book.rightsCategory}): Original file is never hosted (0B retained); OCR & translation derivatives enter the Shared Translation Repository for reuse."
+                                "Lipi Derivative Asset (${book.rightsCategory}): Original file is never hosted (0B retained); OCR & translation derivatives enter the Shared Translation Repository for reuse."
                             } else {
                                 "Private Upload (${book.rightsCategory}): Strictly isolated to your personal account (PRIVATE policy)."
                             },

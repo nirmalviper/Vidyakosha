@@ -68,12 +68,12 @@ import com.example.data.local.UserEntitlementEntity
 import com.example.data.local.UserEntity
 
 enum class CorpusHubSection(val label: String) {
-    OVERVIEW_ANALYTICS("Reuse & Analytics"),
-    CANONICAL_REPOSITORY("Shared Translations"),
-    TRANSLATION_MEMORY("Translation Memory (TM)"),
-    QUALITY_AND_RIGHTS_CMS("Editorial & Rights CMS"),
-    BACKGROUND_JOBS("Job Queue"),
-    LAUNCH_DEPLOY_MONETIZE("Git, Deploy & Monetize")
+    OVERVIEW_ANALYTICS("Overview"),
+    CANONICAL_REPOSITORY("Shared Repo"),
+    TRANSLATION_MEMORY("Segment Memory"),
+    QUALITY_AND_RIGHTS_CMS("Editorial & Rights"),
+    BACKGROUND_JOBS("Jobs (${"Queue"})"),
+    LAUNCH_DEPLOY_MONETIZE("Deploy & Plans")
 }
 
 /**
@@ -112,25 +112,21 @@ fun SharedCorpusAndGovernanceHubScreen(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = "VidyaKosha Commons & Editorial CMS",
-                    style = MaterialTheme.typography.headlineSmall,
-                    fontWeight = FontWeight.Bold
-                )
-                Text(
-                    text = "Zero-Host P2P OCR & Translation Derivatives • Segment Memory • Rights, Git & Monetization",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
+            Text(
+                text = "Shared Translation Commons",
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.weight(1f)
+            )
             OutlinedButton(
                 onClick = onOpenPlansDialog,
+                shape = RoundedCornerShape(20.dp),
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
                 modifier = Modifier.testTag("corpus_open_plans_button")
             ) {
-                Icon(Icons.Default.WorkspacePremium, contentDescription = null, modifier = Modifier.size(16.dp))
+                Icon(Icons.Default.WorkspacePremium, contentDescription = null, modifier = Modifier.size(15.dp))
                 Spacer(modifier = Modifier.width(6.dp))
-                Text(currentUser?.activeTierCode ?: "FREE")
+                Text(currentUser?.activeTierCode ?: "FREE", style = MaterialTheme.typography.labelMedium)
             }
         }
 
@@ -652,24 +648,41 @@ fun SharedCorpusAndGovernanceHubScreen(
                                     fontWeight = FontWeight.Bold
                                 )
                                 Text(
-                                    text = "• Formats Supported: PDF (.pdf), EPUB (.epub), Markdown (.md), Plain Text (.txt), HTML (.html/.xhtml), and VidyaKosha P2P JSON.\n" +
+                                    text = "• Formats Supported: PDF (.pdf), EPUB (.epub), Markdown (.md), Plain Text (.txt), HTML (.html/.xhtml), and Lipi P2P JSON.\n" +
                                         "• Zero Original Hosting: Any user converts their own document ephemerally. The original binary is purged immediately (0 bytes hosted on server).\n" +
-                                        "• Derivative Ownership (P2P_DERIVATIVE_OWNED): VidyaKosha owns and permanently retains the converted structured OCR segments, SHA-256 content hashes, and canonical translations—never the original certified/restricted file.",
+                                        "• Derivative Ownership (P2P_DERIVATIVE_OWNED): Lipi owns and permanently retains the converted structured OCR segments, SHA-256 content hashes, and canonical translations—never the original certified/restricted file.",
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
-                                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                                    Button(
-                                        onClick = onExtractAnyFileClick,
-                                        modifier = Modifier.testTag("launchpad_extract_file_button")
+                                if (currentUser != null) {
+                                    FlowRow(
+                                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                        verticalArrangement = Arrangement.spacedBy(8.dp)
                                     ) {
-                                        Text("Extract Local File (PDF/EPUB/TXT)")
+                                        Button(
+                                            onClick = onExtractAnyFileClick,
+                                            modifier = Modifier.testTag("launchpad_extract_file_button")
+                                        ) {
+                                            Text("Extract Local File (PDF/EPUB/TXT)")
+                                        }
+                                        OutlinedButton(
+                                            onClick = onExtractSampleEpubClick,
+                                            modifier = Modifier.testTag("launchpad_extract_sample_epub_button")
+                                        ) {
+                                            Text("Test P2P EPUB")
+                                        }
                                     }
-                                    OutlinedButton(
-                                        onClick = onExtractSampleEpubClick,
-                                        modifier = Modifier.testTag("launchpad_extract_sample_epub_button")
+                                } else {
+                                    Surface(
+                                        shape = RoundedCornerShape(8.dp),
+                                        color = MaterialTheme.colorScheme.secondaryContainer
                                     ) {
-                                        Text("Test P2P EPUB")
+                                        Text(
+                                            text = "Sign in required to upload or extract books.",
+                                            style = MaterialTheme.typography.labelMedium,
+                                            color = MaterialTheme.colorScheme.onSecondaryContainer,
+                                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
+                                        )
                                     }
                                 }
                             }
@@ -694,9 +707,9 @@ fun SharedCorpusAndGovernanceHubScreen(
                                 )
                                 Text(
                                     text = "• Local Git Initialized: Workspace repository is initialized with a strict .gitignore excluding .env, local.properties, debug.keystore, and build outputs.\n" +
-                                        "• Push to Private GitHub from AI Studio: Open Settings (top-right gear icon) → Export to GitHub → Select 'Private Repository' (e.g. vidyakosha-core).\n" +
+                                        "• Push to Private GitHub from AI Studio: Open Settings (top-right gear icon) → Export to GitHub → Select 'Private Repository' (e.g. lipi-core).\n" +
                                         "• Or via GitHub CLI after ZIP Export:\n" +
-                                        "  gh repo create vidyakosha --private --source=. --remote=origin --push",
+                                        "  gh repo create lipi --private --source=. --remote=origin --push",
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
@@ -747,7 +760,7 @@ fun SharedCorpusAndGovernanceHubScreen(
                                     fontWeight = FontWeight.Bold
                                 )
                                 Text(
-                                    text = "• What You Monetize: Never charge for raw third-party restricted files. Charge for VidyaKosha-owned value-added derivatives: Expert/Publisher-Verified Translations (`PAID_USERS`), Scholarly Word-by-Word Pada Commentary, Cross-Book Research (`PRO_RESEARCH` $29/mo), Offline Sync & Enhanced TTS (`READER` $12/mo), and University/Seat Licences (`INSTITUTION_MEMBERSHIP`).\n" +
+                                    text = "• What You Monetize: Never charge for raw third-party restricted files. Charge for Lipi-owned value-added derivatives: Expert/Publisher-Verified Translations (`PAID_USERS`), Scholarly Word-by-Word Pada Commentary, Cross-Book Research (`PRO_RESEARCH` $29/mo), Offline Sync & Enhanced TTS (`READER` $12/mo), and University/Seat Licences (`INSTITUTION_MEMBERSHIP`).\n" +
                                         "• Payment Gateways: Connect Google Play Billing Library (Android in-app subscriptions) and Stripe / Razorpay (UPI, Cards, NetBanking) webhooks directly to the `user_entitlements` table (`SUBSCRIPTION_TIER`, `BOOK_PURCHASE`, `INSTITUTION_MEMBERSHIP`).",
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant

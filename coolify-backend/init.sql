@@ -1,5 +1,5 @@
 -- ============================================================================
--- VidyaKosha Knowledge Commons — PostgreSQL 16 Schema & First-Boot Seed
+-- Lipi Knowledge Commons — PostgreSQL 16 Schema & First-Boot Seed
 -- Automatically executed on Coolify PostgreSQL first deployment
 -- ============================================================================
 
@@ -74,7 +74,7 @@ CREATE TABLE IF NOT EXISTS books (
     subtitle TEXT NOT NULL DEFAULT '',
     author_or_source TEXT NOT NULL DEFAULT '',
     contributors TEXT NOT NULL DEFAULT '',
-    publisher_name TEXT NOT NULL DEFAULT 'VidyaKosha Commons',
+    publisher_name TEXT NOT NULL DEFAULT 'Lipi Commons',
     description TEXT NOT NULL DEFAULT '',
     original_language TEXT NOT NULL DEFAULT 'Sanskrit',
     category TEXT NOT NULL DEFAULT 'Classical Wisdom',
@@ -107,7 +107,7 @@ CREATE TABLE IF NOT EXISTS paragraph_translations (
     review_status TEXT NOT NULL DEFAULT 'AI_GENERATED',
     access_policy TEXT NOT NULL DEFAULT 'PUBLIC',
     created_by_user_id BIGINT NOT NULL DEFAULT 0,
-    translator_display_name TEXT NOT NULL DEFAULT 'VidyaKosha Scholar',
+    translator_display_name TEXT NOT NULL DEFAULT 'Lipi Scholar',
     created_at BIGINT NOT NULL DEFAULT (EXTRACT(EPOCH FROM NOW()) * 1000)::BIGINT
 );
 
