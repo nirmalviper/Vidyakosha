@@ -93,12 +93,17 @@ fun AuthPortalScreen(
     onLoginSubmit: (email: String, password: String) -> Unit,
     onSignUpSubmit: (name: String, email: String, password: String, preferredLanguage: String) -> Unit,
     onLoginAsSuperadminClick: (() -> Unit)? = null,
+    onRequestPasswordReset: ((email: String) -> Unit)? = null,
+    onConfirmPasswordReset: ((email: String, resetCode: String, newPassword: String) -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     var displayName by rememberSaveable { mutableStateOf("") }
     var email by rememberSaveable { mutableStateOf("") }
     var password by rememberSaveable { mutableStateOf("") }
     var showPassword by rememberSaveable { mutableStateOf(false) }
+    var isPasswordResetMode by rememberSaveable { mutableStateOf(false) }
+    var resetCodeInput by rememberSaveable { mutableStateOf("") }
+    var newResetPasswordInput by rememberSaveable { mutableStateOf("") }
     var signUpTopThree by remember {
         mutableStateOf(
             LanguageRegistry.parseTopThreeLanguages(null, defaultLanguage.name)
@@ -226,6 +231,98 @@ fun AuthPortalScreen(
                         .testTag("auth_password_input")
                 )
 
+                if (!isSignUpMode && onRequestPasswordReset != null && onConfirmPasswordReset != null) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.End
+                    ) {
+                        Text(
+                            text = if (isPasswordResetMode) "Hide Password Reset" else "Forgot Password?",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.primary,
+                            fontWeight = FontWeight.SemiBold,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(6.dp))
+                                .clickable { isPasswordResetMode = !isPasswordResetMode }
+                                .padding(horizontal = 6.dp, vertical = 4.dp)
+                                .testTag("auth_forgot_password_toggle")
+                        )
+                    }
+
+                    AnimatedVisibility(visible = isPasswordResetMode) {
+                        Surface(
+                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
+                            shape = RoundedCornerShape(12.dp),
+                            border = BorderStroke(0.5.dp, MaterialTheme.colorScheme.outlineVariant),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("auth_password_reset_panel")
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(14.dp),
+                                verticalArrangement = Arrangement.spacedBy(10.dp)
+                            ) {
+                                Text(
+                                    text = "Self-Service Password Recovery",
+                                    style = MaterialTheme.typography.titleSmall,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                                Text(
+                                    text = "1. Enter your email above and tap 'Get 6-Digit Reset Code'.\n2. Enter the 6-digit code and your new password below.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                OutlinedButton(
+                                    onClick = { onRequestPasswordReset(email) },
+                                    shape = RoundedCornerShape(8.dp),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .testTag("auth_request_reset_code_button")
+                                ) {
+                                    Text("Get 6-Digit Reset Code for Email")
+                                }
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    OutlinedTextField(
+                                        value = resetCodeInput,
+                                        onValueChange = { resetCodeInput = it.filter { ch -> ch.isDigit() }.take(6) },
+                                        label = { Text("6-Digit Code") },
+                                        singleLine = true,
+                                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .testTag("auth_reset_code_input")
+                                    )
+                                    OutlinedTextField(
+                                        value = newResetPasswordInput,
+                                        onValueChange = { newResetPasswordInput = it },
+                                        label = { Text("New Password") },
+                                        singleLine = true,
+                                        visualTransformation = if (showPassword) VisualTransformation.None else PasswordVisualTransformation(),
+                                        modifier = Modifier
+                                            .weight(1.4f)
+                                            .testTag("auth_new_password_input")
+                                    )
+                                }
+                                Button(
+                                    onClick = {
+                                        onConfirmPasswordReset(
+                                            email,
+                                            resetCodeInput,
+                                            newResetPasswordInput
+                                        )
+                                    },
+                                    shape = RoundedCornerShape(8.dp),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .testTag("auth_confirm_reset_button")
+                                ) {
+                                    Text("Verify Code & Reset Password")
+                                }
+                            }
+                        }
+                    }
+                }
+
                 if (isSignUpMode) {
                     Text(
                         text = "Your Top 3 Languages (${signUpTopThree.joinToString(", ") { it.name }})",
@@ -340,6 +437,12 @@ fun AuthPortalScreen(
                             style = MaterialTheme.typography.labelMedium
                         )
                     }
+                    Text(
+                        text = "Default Admin: superadmin@vidyakosha.org (or admin@vidyakosha.org) • Password: test1234",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.align(Alignment.CenterHorizontally)
+                    )
                 }
             }
         }
@@ -385,6 +488,9 @@ fun UserAiSettingsScreen(
         currentUser.preferredLanguage
     ),
     onSaveTopThreeLanguages: (List<LanguageDescriptor>) -> Unit = {},
+    onChangePassword: ((currentPassword: String, newPassword: String) -> Unit)? = null,
+    initialCoolifyBackendUrl: String = "",
+    onSaveCoolifyBackendUrl: ((url: String) -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     var selectedProvider by remember { mutableStateOf(AiProviderRegistry.PROVIDERS.first()) }
@@ -396,6 +502,10 @@ fun UserAiSettingsScreen(
     var useForTranslation by remember { mutableStateOf(true) }
     var useForChat by remember { mutableStateOf(true) }
     var showRawKey by remember { mutableStateOf(false) }
+
+    var currentPasswordInput by rememberSaveable { mutableStateOf("") }
+    var newPasswordInput by rememberSaveable { mutableStateOf("") }
+    var coolifyUrlInput by rememberSaveable(initialCoolifyBackendUrl) { mutableStateOf(initialCoolifyBackendUrl) }
 
     // Top 3 Languages Selector state
     var draftTopThree by remember(userTopLanguages) {
@@ -533,6 +643,139 @@ fun UserAiSettingsScreen(
                             },
                             modifier = Modifier.padding(14.dp)
                         )
+                    }
+                }
+            }
+        }
+
+        // =====================================================================
+        // PASSWORD SECURITY & (SUPERADMIN-ONLY) COOLIFY POSTGRESQL BACKEND SYNC CARD
+        // =====================================================================
+        item {
+            val isSuperadmin = currentUser.role.equals("superadmin", ignoreCase = true)
+            Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .widthIn(max = 820.dp)
+                        .testTag("account_security_and_coolify_card"),
+                    shape = RoundedCornerShape(14.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                    border = BorderStroke(0.5.dp, MaterialTheme.colorScheme.outlineVariant)
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(20.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                imageVector = Icons.Default.Security,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(20.dp)
+                            )
+                            Spacer(modifier = Modifier.width(10.dp))
+                            Column {
+                                Text(
+                                    text = if (isSuperadmin) {
+                                        "Password Security & Coolify PostgreSQL Sync (Superadmin)"
+                                    } else {
+                                        "Account Password Security"
+                                    },
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                                Text(
+                                    text = if (isSuperadmin) {
+                                        "Change your Superadmin password (default is test1234) or override the Coolify PostgreSQL server URL."
+                                    } else {
+                                        "Update your account password anytime. All active sessions remain protected."
+                                    },
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+
+                        if (onChangePassword != null) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                OutlinedTextField(
+                                    value = currentPasswordInput,
+                                    onValueChange = { currentPasswordInput = it },
+                                    label = { Text("Current Password") },
+                                    singleLine = true,
+                                    visualTransformation = PasswordVisualTransformation(),
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .testTag("change_pwd_current_input")
+                                )
+                                OutlinedTextField(
+                                    value = newPasswordInput,
+                                    onValueChange = { newPasswordInput = it },
+                                    label = { Text("New Password (6+ chars)") },
+                                    singleLine = true,
+                                    visualTransformation = PasswordVisualTransformation(),
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .testTag("change_pwd_new_input")
+                                )
+                                Button(
+                                    onClick = {
+                                        onChangePassword(currentPasswordInput, newPasswordInput)
+                                        currentPasswordInput = ""
+                                        newPasswordInput = ""
+                                    },
+                                    shape = RoundedCornerShape(10.dp),
+                                    modifier = Modifier.testTag("change_pwd_submit_button")
+                                ) {
+                                    Text("Update Password")
+                                }
+                            }
+                        }
+
+                        if (isSuperadmin && onSaveCoolifyBackendUrl != null) {
+                            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+                            Text(
+                                text = "Superadmin Only — Coolify Backend URL Override (Set COOLIFY_BACKEND_URL in Secrets/.env to bake into the APK for all users automatically)",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                OutlinedTextField(
+                                    value = coolifyUrlInput,
+                                    onValueChange = { coolifyUrlInput = it },
+                                    label = { Text("Coolify Backend Server URL (PostgreSQL + REST API)") },
+                                    placeholder = { Text("https://vidyakosha.yourdomain.com") },
+                                    singleLine = true,
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .testTag("coolify_backend_url_input")
+                                )
+                                OutlinedButton(
+                                    onClick = { onSaveCoolifyBackendUrl(coolifyUrlInput) },
+                                    shape = RoundedCornerShape(10.dp),
+                                    modifier = Modifier.testTag("coolify_backend_save_button")
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.NetworkCheck,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text("Save & Test Coolify")
+                                }
+                            }
+                        }
                     }
                 }
             }

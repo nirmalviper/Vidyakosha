@@ -836,6 +836,83 @@ class PolyglotViewModel(application: Application) : AndroidViewModel(application
         }
     }
 
+    fun requestPasswordReset(email: String) {
+        viewModelScope.launch {
+            _isAuthLoading.value = true
+            _authErrorMessage.value = null
+            val result = repository.requestPasswordReset(email)
+            _isAuthLoading.value = false
+            result.fold(
+                onSuccess = { msg ->
+                    _authErrorMessage.value = "✅ $msg"
+                },
+                onFailure = { err ->
+                    _authErrorMessage.value = err.message ?: "Unable to request password reset."
+                }
+            )
+        }
+    }
+
+    fun confirmPasswordReset(email: String, resetCode: String, newPassword: String) {
+        viewModelScope.launch {
+            _isAuthLoading.value = true
+            _authErrorMessage.value = null
+            val result = repository.confirmPasswordReset(email, resetCode, newPassword)
+            _isAuthLoading.value = false
+            result.fold(
+                onSuccess = { user ->
+                    _currentUser.value = user
+                    val topThree = repository.getRestoredTopThreeLanguages(user)
+                    _userTopLanguages.value = topThree
+                    val pref = LanguageRegistry.findByNameOrCode(user.preferredLanguage)
+                    _selectedLanguage.value = if (topThree.any { it.code == pref.code }) pref else topThree.first()
+                    _topDestination.value = TopLevelDestination.MY_HOME
+                },
+                onFailure = { err ->
+                    _authErrorMessage.value = err.message ?: "Unable to reset password."
+                }
+            )
+        }
+    }
+
+    fun changeUserPassword(currentPassword: String, newPassword: String) {
+        val user = _currentUser.value ?: return
+        viewModelScope.launch {
+            val result = repository.changeUserPassword(user.id, currentPassword, newPassword)
+            result.fold(
+                onSuccess = { updatedUser ->
+                    _currentUser.value = updatedUser
+                    _aiSettingsStatusIsError.value = false
+                    _aiSettingsStatusBanner.value = "Password updated for ${updatedUser.email}."
+                },
+                onFailure = { err ->
+                    _aiSettingsStatusIsError.value = true
+                    _aiSettingsStatusBanner.value = err.message ?: "Failed to update password."
+                }
+            )
+        }
+    }
+
+    fun getSavedCoolifyBackendUrl(): String = repository.getCoolifyBackendUrl()
+
+    fun saveAndSyncCoolifyBackendUrl(url: String) {
+        viewModelScope.launch {
+            _isTestingAiConnection.value = true
+            val result = repository.saveAndSyncCoolifyBackendUrl(url)
+            _isTestingAiConnection.value = false
+            result.fold(
+                onSuccess = { msg ->
+                    _aiSettingsStatusIsError.value = false
+                    _aiSettingsStatusBanner.value = msg
+                },
+                onFailure = { err ->
+                    _aiSettingsStatusIsError.value = true
+                    _aiSettingsStatusBanner.value = err.message ?: "Failed to save Coolify URL."
+                }
+            )
+        }
+    }
+
     fun openPlansDialog() {
         _isPlansDialogVisible.value = true
     }
@@ -2093,6 +2170,26 @@ class PolyglotViewModel(application: Application) : AndroidViewModel(application
                     }
                     _adminActionIsError.value = false
                     _adminActionBanner.value = "Updated role for '${updatedUser.email}' to '${updatedUser.role}'."
+                },
+                onFailure = { err ->
+                    _adminActionIsError.value = true
+                    _adminActionBanner.value = err.message
+                }
+            )
+        }
+    }
+
+    fun adminResetUserPassword(targetUserId: Long, newPassword: String, reasonOrNote: String) {
+        val adminId = _currentUser.value?.id ?: 0L
+        viewModelScope.launch {
+            val result = repository.superadminApi.resetUserPasswordByAdmin(adminId, targetUserId, newPassword, reasonOrNote)
+            result.fold(
+                onSuccess = { updatedUser ->
+                    if (_currentUser.value?.id == updatedUser.id) {
+                        _currentUser.value = updatedUser
+                    }
+                    _adminActionIsError.value = false
+                    _adminActionBanner.value = "Reset password for '${updatedUser.email}' and invalidated prior sessions."
                 },
                 onFailure = { err ->
                     _adminActionIsError.value = true

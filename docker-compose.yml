@@ -1,0 +1,41 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-vidyakosha}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-vidyakosha_secret}
+      POSTGRES_DB: ${POSTGRES_DB:-vidyakosha}
+    volumes:
+      - vidyakosha_pgdata:/var/lib/postgresql/data
+      - ./coolify-backend/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-vidyakosha} -d ${POSTGRES_DB:-vidyakosha}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  vidyakosha-portal:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "80:80"
+    environment:
+      PORT: 80
+      DATABASE_URL: postgresql://${POSTGRES_USER:-vidyakosha}:${POSTGRES_PASSWORD:-vidyakosha_secret}@postgres:5432/${POSTGRES_DB:-vidyakosha}
+      DEFAULT_ADMIN_PASSWORD: ${DEFAULT_ADMIN_PASSWORD:-test1234}
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:80/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  vidyakosha_pgdata:

@@ -185,4 +185,85 @@ object SecurityVault {
         return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             .getString("top_three_languages_csv", null)
     }
+
+    /**
+     * Generates a cryptographically random 6-digit password reset token valid for 15 minutes
+     * and stores its salted hash + expiry timestamp for the target email.
+     */
+    fun generatePasswordResetCode(context: Context, email: String): String {
+        val cleanEmail = email.trim().lowercase()
+        val randomInt = SecureRandom().nextInt(900_000) + 100_000
+        val code = randomInt.toString()
+        val salt = generateSalt()
+        val codeHash = hashPassword(code, salt)
+        val expiresAt = System.currentTimeMillis() + 15 * 60 * 1000L // 15 minutes
+
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .putString("pwd_reset_salt_$cleanEmail", salt)
+            .putString("pwd_reset_hash_$cleanEmail", codeHash)
+            .putLong("pwd_reset_exp_$cleanEmail", expiresAt)
+            .apply()
+
+        return code
+    }
+
+    /**
+     * Verifies a 6-digit password reset token and consumes (invalidates) it upon success.
+     */
+    fun verifyAndConsumePasswordResetCode(context: Context, email: String, code: String): Boolean {
+        val cleanEmail = email.trim().lowercase()
+        val cleanCode = code.trim()
+        if (cleanCode.length != 6) return false
+
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val salt = prefs.getString("pwd_reset_salt_$cleanEmail", null) ?: return false
+        val expectedHash = prefs.getString("pwd_reset_hash_$cleanEmail", null) ?: return false
+        val expiresAt = prefs.getLong("pwd_reset_exp_$cleanEmail", 0L)
+
+        if (System.currentTimeMillis() > expiresAt) {
+            prefs.edit()
+                .remove("pwd_reset_salt_$cleanEmail")
+                .remove("pwd_reset_hash_$cleanEmail")
+                .remove("pwd_reset_exp_$cleanEmail")
+                .apply()
+            return false
+        }
+
+        val matches = verifyPassword(cleanCode, salt, expectedHash)
+        if (matches) {
+            prefs.edit()
+                .remove("pwd_reset_salt_$cleanEmail")
+                .remove("pwd_reset_hash_$cleanEmail")
+                .remove("pwd_reset_exp_$cleanEmail")
+                .apply()
+        }
+        return matches
+    }
+
+    fun saveCoolifyBackendUrl(context: Context, baseUrl: String) {
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .putString("coolify_backend_base_url", baseUrl.trim().trimEnd('/'))
+            .apply()
+    }
+
+    fun getCoolifyBackendUrl(context: Context): String {
+        val savedOverride = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .getString("coolify_backend_base_url", "")
+            .orEmpty()
+            .trim()
+            .trimEnd('/')
+        if (savedOverride.isNotBlank()) return savedOverride
+
+        // Fall back to the baked-in BuildConfig URL (from Secrets panel .env or environment variable)
+        val bakedInEnvUrl = runCatching {
+            val field = com.example.BuildConfig::class.java.getDeclaredField("COOLIFY_BACKEND_URL")
+            field.isAccessible = true
+            (field.get(null) as? String)?.trim()?.trimEnd('/').orEmpty()
+        }.getOrDefault("")
+        if (bakedInEnvUrl.isNotBlank() && bakedInEnvUrl != "null") return bakedInEnvUrl
+
+        return com.example.BuildConfig.DEFAULT_COOLIFY_BACKEND_URL.trim().trimEnd('/')
+    }
 }

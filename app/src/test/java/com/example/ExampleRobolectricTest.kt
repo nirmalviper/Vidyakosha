@@ -360,13 +360,44 @@ class ExampleRobolectricTest {
             dao.getTranslationById(sampleTrans.id)
         )
 
-        // 6. Immutable audit log records all actions
+        // 6. Verify default Superadmin password is "test1234" on both superadmin@vidyakosha.org and admin@vidyakosha.org
+        val loginDefaultAdmin = repository.loginUser("admin@vidyakosha.org", "test1234")
+        assertTrue("Default admin@vidyakosha.org must sign in with test1234", loginDefaultAdmin.isSuccess)
+
+        // 7. Verify Self-Service 6-Digit Password Reset Flow & Change Password Flow
+        val resetReq = repository.requestPasswordReset("reader@vidyakosha.org")
+        assertTrue("Password reset request must succeed for registered user", resetReq.isSuccess)
+        val extractedCode = resetReq.getOrThrow().substringAfterLast(": ").trim()
+        assertEquals(6, extractedCode.length)
+
+        val resetConfirm = repository.confirmPasswordReset("reader@vidyakosha.org", extractedCode, "newReaderPass99")
+        assertTrue("Password reset with valid 6-digit code must succeed", resetConfirm.isSuccess)
+        assertTrue("User must sign in with newly reset password", repository.loginUser("reader@vidyakosha.org", "newReaderPass99").isSuccess)
+
+        val changePwdResult = repository.changeUserPassword(normalUserId, "newReaderPass99", "changedPass123")
+        assertTrue("Authenticated password change must succeed", changePwdResult.isSuccess)
+        assertTrue(repository.loginUser("reader@vidyakosha.org", "changedPass123").isSuccess)
+
+        val adminResetResult = superadminApi.resetUserPasswordByAdmin(
+            adminUserId = superadmin.id,
+            targetUserId = normalUserId,
+            newPassword = "test1234",
+            reasonOrNote = "Superadmin temporary password reset"
+        )
+        assertTrue(adminResetResult.isSuccess)
+        assertTrue(repository.loginUser("reader@vidyakosha.org", "test1234").isSuccess)
+
+        // 8. Immutable audit log records all actions
         val auditLogs = dao.getAllAdminAuditLogs()
         assertTrue(auditLogs.any { it.action == "UNAUTHORIZED_SUPERADMIN_ATTEMPT" })
         assertTrue(auditLogs.any { it.action == "PLAN_SAVED" })
         assertTrue(auditLogs.any { it.action == "BOOK_CREATED" })
         assertTrue(auditLogs.any { it.action == "ENTITLEMENT_GRANTED" })
         assertTrue(auditLogs.any { it.action == "TRANSLATION_RETRANSLATE_TRIGGERED" })
+        assertTrue(auditLogs.any { it.action == "PASSWORD_RESET_REQUESTED" })
+        assertTrue(auditLogs.any { it.action == "PASSWORD_RESET_COMPLETED" })
+        assertTrue(auditLogs.any { it.action == "USER_PASSWORD_CHANGED" })
+        assertTrue(auditLogs.any { it.action == "ADMIN_USER_PASSWORD_RESET" })
 
         db.close()
     }

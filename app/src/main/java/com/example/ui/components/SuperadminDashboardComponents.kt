@@ -210,6 +210,7 @@ fun SuperadminDashboardScreen(
     ) -> Unit,
     onSetUserAccountStatus: (Long, String, String) -> Unit,
     onUpdateUserRole: (Long, String, String) -> Unit,
+    onResetUserPassword: ((Long, String, String) -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     BackHandler(onBack = onBackToLibrary)
@@ -430,7 +431,8 @@ fun SuperadminDashboardScreen(
                 entitlements = entitlements,
                 translations = translations,
                 onSetUserAccountStatus = onSetUserAccountStatus,
-                onUpdateUserRole = onUpdateUserRole
+                onUpdateUserRole = onUpdateUserRole,
+                onResetUserPassword = onResetUserPassword
             )
             SuperadminSection.AUDIT_LOG -> SuperadminAuditTrailPane(
                 auditLogs = auditLogs
@@ -2598,7 +2600,8 @@ private fun SuperadminUsersManagementPane(
     entitlements: List<UserEntitlementEntity>,
     translations: List<ParagraphTranslationEntity>,
     onSetUserAccountStatus: (Long, String, String) -> Unit,
-    onUpdateUserRole: (Long, String, String) -> Unit
+    onUpdateUserRole: (Long, String, String) -> Unit,
+    onResetUserPassword: ((Long, String, String) -> Unit)? = null
 ) {
     var searchQuery by rememberSaveable { mutableStateOf("") }
     var inspectedUserId by rememberSaveable { mutableStateOf<Long?>(null) }
@@ -2795,6 +2798,21 @@ private fun SuperadminUsersManagementPane(
                             modifier = Modifier.testTag("cycle_role_user_${user.id}")
                         ) {
                             Text("Set Role: $nextRole")
+                        }
+
+                        if (onResetUserPassword != null) {
+                            OutlinedButton(
+                                onClick = {
+                                    onResetUserPassword(
+                                        user.id,
+                                        "test1234",
+                                        "Reset password of ${user.email} to temporary password (test1234) by Superadmin"
+                                    )
+                                },
+                                modifier = Modifier.testTag("reset_pwd_user_${user.id}")
+                            ) {
+                                Text("Reset Password (test1234)")
+                            }
                         }
                     }
                 }

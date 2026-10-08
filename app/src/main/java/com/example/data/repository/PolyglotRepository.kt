@@ -233,6 +233,181 @@ class PolyglotRepository(
         SecurityVault.clearSavedSession(appContext)
     }
 
+    /**
+     * Step 1 of Password Recovery: Generates a 6-digit recovery code valid for 15 minutes
+     * for an existing user account and records a security audit trail entry.
+     */
+    suspend fun requestPasswordReset(email: String): Result<String> {
+        val cleanEmail = email.trim().lowercase()
+        if (cleanEmail.isBlank() || !cleanEmail.contains("@")) {
+            return Result.failure(IllegalArgumentException("Please enter your registered email address."))
+        }
+        val user = dao.getUserByEmail(cleanEmail)
+            ?: return Result.failure(IllegalArgumentException("No account found for '$cleanEmail'."))
+
+        if (user.accountStatus == AccountStatus.SUSPENDED) {
+            return Result.failure(IllegalArgumentException("Account '${user.email}' is suspended. Contact a Superadmin."))
+        }
+
+        val resetCode = SecurityVault.generatePasswordResetCode(appContext, cleanEmail)
+
+        dao.insertAdminAuditLog(
+            AdminAuditLogEntity(
+                adminUserId = user.id,
+                adminEmailOrName = "${user.displayName} <${user.email}>",
+                adminRole = user.role,
+                action = "PASSWORD_RESET_REQUESTED",
+                entityAffected = "User",
+                entityId = "user:${user.id}",
+                previousValue = "status=${user.accountStatus}",
+                newValue = "6-digit recovery token issued (valid 15m)",
+                reasonOrNote = "Self-service password recovery requested",
+                deviceOrContextInfo = "AuthPortal Password Recovery"
+            )
+        )
+
+        return Result.success(
+            "6-digit recovery code generated for $cleanEmail (valid 15 min): $resetCode"
+        )
+    }
+
+    /**
+     * Step 2 of Password Recovery: Verifies the 6-digit recovery code, updates the user's
+     * salted SHA-256 password hash, invalidates prior sessions, and signs the user in.
+     */
+    suspend fun confirmPasswordReset(
+        email: String,
+        resetCode: String,
+        newPassword: String
+    ): Result<UserEntity> {
+        val cleanEmail = email.trim().lowercase()
+        val cleanCode = resetCode.trim()
+        if (cleanEmail.isBlank()) {
+            return Result.failure(IllegalArgumentException("Please enter your email address."))
+        }
+        if (cleanCode.length != 6) {
+            return Result.failure(IllegalArgumentException("Please enter the 6-digit recovery code."))
+        }
+        if (newPassword.length < 6) {
+            return Result.failure(IllegalArgumentException("New password must be at least 6 characters long."))
+        }
+
+        val user = dao.getUserByEmail(cleanEmail)
+            ?: return Result.failure(IllegalArgumentException("No account found for '$cleanEmail'."))
+
+        val codeValid = SecurityVault.verifyAndConsumePasswordResetCode(appContext, cleanEmail, cleanCode)
+        if (!codeValid) {
+            return Result.failure(IllegalArgumentException("Invalid or expired 6-digit recovery code. Please request a new code."))
+        }
+
+        val newSalt = SecurityVault.generateSalt()
+        val newHash = SecurityVault.hashPassword(newPassword, newSalt)
+        val updatedUser = user.copy(
+            passwordSalt = newSalt,
+            passwordHash = newHash,
+            lastLoginAt = System.currentTimeMillis()
+        )
+        dao.updateUser(updatedUser)
+        dao.clearSessionsForUser(user.id)
+
+        val token = SecurityVault.generateSessionToken()
+        dao.insertSession(UserSessionEntity(userId = user.id, token = token))
+        SecurityVault.savePersistentSession(appContext, user.id, token)
+
+        dao.insertAdminAuditLog(
+            AdminAuditLogEntity(
+                adminUserId = user.id,
+                adminEmailOrName = "${user.displayName} <${user.email}>",
+                adminRole = user.role,
+                action = "PASSWORD_RESET_COMPLETED",
+                entityAffected = "User",
+                entityId = "user:${user.id}",
+                previousValue = "priorSessions=invalidated",
+                newValue = "passwordHash=updated (SHA-256)",
+                reasonOrNote = "Self-service password reset completed with verified 6-digit token",
+                deviceOrContextInfo = "AuthPortal Password Recovery"
+            )
+        )
+
+        return Result.success(updatedUser)
+    }
+
+    /**
+     * Allows a signed-in user (or Superadmin) to change their password after verifying their current password.
+     */
+    suspend fun changeUserPassword(
+        userId: Long,
+        currentPassword: String,
+        newPassword: String
+    ): Result<UserEntity> {
+        val user = dao.getUserById(userId)
+            ?: return Result.failure(IllegalArgumentException("User session not found."))
+        if (currentPassword.isBlank()) {
+            return Result.failure(IllegalArgumentException("Please enter your current password."))
+        }
+        if (newPassword.length < 6) {
+            return Result.failure(IllegalArgumentException("New password must be at least 6 characters long."))
+        }
+        val currentValid = SecurityVault.verifyPassword(currentPassword, user.passwordSalt, user.passwordHash)
+        if (!currentValid) {
+            return Result.failure(IllegalArgumentException("Current password is incorrect."))
+        }
+
+        val newSalt = SecurityVault.generateSalt()
+        val newHash = SecurityVault.hashPassword(newPassword, newSalt)
+        val updatedUser = user.copy(
+            passwordSalt = newSalt,
+            passwordHash = newHash
+        )
+        dao.updateUser(updatedUser)
+
+        dao.insertAdminAuditLog(
+            AdminAuditLogEntity(
+                adminUserId = user.id,
+                adminEmailOrName = "${user.displayName} <${user.email}>",
+                adminRole = user.role,
+                action = "USER_PASSWORD_CHANGED",
+                entityAffected = "User",
+                entityId = "user:${user.id}",
+                previousValue = "passwordHash=<redacted>",
+                newValue = "passwordHash=updated (SHA-256)",
+                reasonOrNote = "Authenticated user changed account password",
+                deviceOrContextInfo = "Account Security Settings"
+            )
+        )
+
+        return Result.success(updatedUser)
+    }
+
+    fun getCoolifyBackendUrl(): String = SecurityVault.getCoolifyBackendUrl(appContext)
+
+    suspend fun saveAndSyncCoolifyBackendUrl(rawUrl: String): Result<String> = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+        val cleanUrl = rawUrl.trim().trimEnd('/')
+        SecurityVault.saveCoolifyBackendUrl(appContext, cleanUrl)
+        if (cleanUrl.isBlank()) {
+            return@withContext Result.success("Cleared Coolify remote backend URL. Running in local Room database mode.")
+        }
+        try {
+            val client = okhttp3.OkHttpClient.Builder()
+                .connectTimeout(6, java.util.concurrent.TimeUnit.SECONDS)
+                .readTimeout(6, java.util.concurrent.TimeUnit.SECONDS)
+                .build()
+            val req = okhttp3.Request.Builder()
+                .url("$cleanUrl/healthz")
+                .get()
+                .build()
+            client.newCall(req).execute().use { resp ->
+                if (resp.isSuccessful) {
+                    Result.success("Connected to Coolify Backend ($cleanUrl) • PostgreSQL & APK Portal Online (HTTP ${resp.code}).")
+                } else {
+                    Result.success("Saved Coolify URL ($cleanUrl). Server responded with HTTP ${resp.code}.")
+                }
+            }
+        } catch (e: Exception) {
+            Result.success("Saved Coolify Backend URL ($cleanUrl). Will sync automatically when server is reachable (${e.javaClass.simpleName}).")
+        }
+    }
+
     suspend fun updateUserPreferredLanguage(user: UserEntity, languageName: String): UserEntity {
         val currentTopThree = LanguageRegistry.parseTopThreeLanguages(user.topThreeLanguagesCsv, user.preferredLanguage)
         val chosen = LanguageRegistry.findByNameOrCode(languageName)

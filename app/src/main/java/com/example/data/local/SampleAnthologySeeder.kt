@@ -23,7 +23,8 @@ object SampleAnthologySeeder {
     private const val BOOK5_FINGERPRINT = "polyglot_publisher_book_kavyashastra_v4"
 
     const val DEFAULT_SUPERADMIN_EMAIL = "superadmin@vidyakosha.org"
-    const val DEFAULT_SUPERADMIN_PASSWORD = "superadmin123"
+    const val ALTERNATE_SUPERADMIN_EMAIL = "admin@vidyakosha.org"
+    const val DEFAULT_SUPERADMIN_PASSWORD = "test1234"
 
     suspend fun ensurePublicCatalogSeeded(
         dao: PolyglotDao,
@@ -1134,7 +1135,7 @@ object SampleAnthologySeeder {
             defaultMeta.forEach { dao.insertPlatformMetadata(it) }
         }
 
-        // 3. Seed Protected Superadmin Account if not present
+        // 3. Seed Protected Superadmin Accounts (superadmin@vidyakosha.org and admin@vidyakosha.org) with default password test1234
         val existingSuperadmin = dao.getUserByEmail(DEFAULT_SUPERADMIN_EMAIL)
         if (existingSuperadmin == null) {
             val salt = SecurityVault.generateSalt()
@@ -1194,8 +1195,57 @@ object SampleAnthologySeeder {
                     timestamp = now
                 )
             )
-        } else if (existingSuperadmin.role != UserRole.SUPERADMIN) {
-            dao.updateUser(existingSuperadmin.copy(role = UserRole.SUPERADMIN, accountStatus = AccountStatus.ACTIVE))
+        } else {
+            // Migrate legacy default password ("superadmin123") to "test1234" if not yet customized
+            val hasLegacyDefault = SecurityVault.verifyPassword("superadmin123", existingSuperadmin.passwordSalt, existingSuperadmin.passwordHash)
+            if (hasLegacyDefault || existingSuperadmin.role != UserRole.SUPERADMIN) {
+                val newSalt = if (hasLegacyDefault) SecurityVault.generateSalt() else existingSuperadmin.passwordSalt
+                val newHash = if (hasLegacyDefault) SecurityVault.hashPassword(DEFAULT_SUPERADMIN_PASSWORD, newSalt) else existingSuperadmin.passwordHash
+                dao.updateUser(
+                    existingSuperadmin.copy(
+                        role = UserRole.SUPERADMIN,
+                        accountStatus = AccountStatus.ACTIVE,
+                        passwordSalt = newSalt,
+                        passwordHash = newHash
+                    )
+                )
+            }
+        }
+
+        // Also seed admin@vidyakosha.org with test1234 for convenience on first deployment
+        val existingAltAdmin = dao.getUserByEmail(ALTERNATE_SUPERADMIN_EMAIL)
+        if (existingAltAdmin == null) {
+            val altSalt = SecurityVault.generateSalt()
+            val altHash = SecurityVault.hashPassword(DEFAULT_SUPERADMIN_PASSWORD, altSalt)
+            val altAdminId = dao.insertUser(
+                UserEntity(
+                    email = ALTERNATE_SUPERADMIN_EMAIL,
+                    displayName = "Platform Admin (Default)",
+                    passwordHash = altHash,
+                    passwordSalt = altSalt,
+                    role = UserRole.SUPERADMIN,
+                    accountStatus = AccountStatus.ACTIVE,
+                    preferredLanguage = "Gujarati",
+                    topThreeLanguagesCsv = "Gujarati,Hindi,English",
+                    activeTierCode = SubscriptionTier.PUBLISHER_INSTITUTION,
+                    institutionCode = "INST_VIDYAKOSHA_FOUNDATION",
+                    hasAcceptedContributorLicense = true,
+                    createdAt = now - 86_400_000L * 14,
+                    lastLoginAt = now
+                )
+            )
+            dao.insertEntitlement(
+                UserEntitlementEntity(
+                    userId = altAdminId,
+                    entitlementKind = EntitlementKind.ADMIN_GRANTED_ACCESS,
+                    targetRef = "ALL_PLATFORM_BOOKS",
+                    displayTitle = "Unrestricted Superadmin Catalogue Access",
+                    status = "ACTIVE",
+                    grantedByAdminId = altAdminId,
+                    grantedByAdminName = "System Bootstrap",
+                    reasonOrNote = "Default admin@vidyakosha.org entitlement"
+                )
+            )
         }
     }
 }

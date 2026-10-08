@@ -544,7 +544,9 @@ fun PolyglotPlatformApp(
                                         onToggleMode = { viewModel.toggleAuthMode(it) },
                                         onLoginSubmit = { email, pass -> viewModel.login(email, pass) },
                                         onSignUpSubmit = { name, email, pass, lang -> viewModel.signUp(name, email, pass, lang) },
-                                        onLoginAsSuperadminClick = { viewModel.authenticateAsSuperadminAndOpenDashboard() }
+                                        onLoginAsSuperadminClick = { viewModel.authenticateAsSuperadminAndOpenDashboard() },
+                                        onRequestPasswordReset = { email -> viewModel.requestPasswordReset(email) },
+                                        onConfirmPasswordReset = { email, code, newPwd -> viewModel.confirmPasswordReset(email, code, newPwd) }
                                     )
                                 } else {
                                     UserHomeDashboardScreen(
@@ -743,7 +745,9 @@ fun PolyglotPlatformApp(
                                         onToggleMode = { viewModel.toggleAuthMode(it) },
                                         onLoginSubmit = { email, pass -> viewModel.login(email, pass) },
                                         onSignUpSubmit = { name, email, pass, lang -> viewModel.signUp(name, email, pass, lang) },
-                                        onLoginAsSuperadminClick = { viewModel.authenticateAsSuperadminAndOpenDashboard() }
+                                        onLoginAsSuperadminClick = { viewModel.authenticateAsSuperadminAndOpenDashboard() },
+                                        onRequestPasswordReset = { email -> viewModel.requestPasswordReset(email) },
+                                        onConfirmPasswordReset = { email, code, newPwd -> viewModel.confirmPasswordReset(email, code, newPwd) }
                                     )
                                 } else {
                                     UserAiSettingsScreen(
@@ -761,7 +765,10 @@ fun PolyglotPlatformApp(
                                         onDeleteConfig = { viewModel.deleteUserAiConfig(it) },
                                         onLogout = { viewModel.logout() },
                                         userTopLanguages = uiState.userTopLanguages,
-                                        onSaveTopThreeLanguages = { viewModel.updateUserTopThreeLanguages(it) }
+                                        onSaveTopThreeLanguages = { viewModel.updateUserTopThreeLanguages(it) },
+                                        onChangePassword = { currentPwd, newPwd -> viewModel.changeUserPassword(currentPwd, newPwd) },
+                                        initialCoolifyBackendUrl = viewModel.getSavedCoolifyBackendUrl(),
+                                        onSaveCoolifyBackendUrl = { url -> viewModel.saveAndSyncCoolifyBackendUrl(url) }
                                     )
                                 }
                             }
@@ -775,7 +782,9 @@ fun PolyglotPlatformApp(
                                     onToggleMode = { viewModel.toggleAuthMode(it) },
                                     onLoginSubmit = { email, pass -> viewModel.login(email, pass) },
                                     onSignUpSubmit = { name, email, pass, lang -> viewModel.signUp(name, email, pass, lang) },
-                                    onLoginAsSuperadminClick = { viewModel.authenticateAsSuperadminAndOpenDashboard() }
+                                    onLoginAsSuperadminClick = { viewModel.authenticateAsSuperadminAndOpenDashboard() },
+                                    onRequestPasswordReset = { email -> viewModel.requestPasswordReset(email) },
+                                    onConfirmPasswordReset = { email, code, newPwd -> viewModel.confirmPasswordReset(email, code, newPwd) }
                                 )
                             }
 
@@ -932,6 +941,9 @@ fun PolyglotPlatformApp(
                                     },
                                     onUpdateUserRole = { targetUserId, role, reason ->
                                         viewModel.adminUpdateUserRole(targetUserId, role, reason)
+                                    },
+                                    onResetUserPassword = { targetUserId, newPwd, reason ->
+                                        viewModel.adminResetUserPassword(targetUserId, newPwd, reason)
                                     }
                                 )
                             }

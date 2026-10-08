@@ -21,6 +21,8 @@ android {
     versionName = "1.0"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+    val defaultCoolifyUrl = (System.getenv("COOLIFY_BACKEND_URL") ?: "").trim().trimEnd('/')
+    buildConfigField("String", "DEFAULT_COOLIFY_BACKEND_URL", "\"$defaultCoolifyUrl\"")
   }
 
   signingConfigs {

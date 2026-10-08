@@ -967,4 +967,43 @@ class SuperadminBackendApi(
         )
         updated
     }
+
+    /**
+     * Allows a Superadmin to directly reset any user's password (e.g., to a temporary recovery password)
+     * and invalidates all active sessions for that user, recording an immutable audit log entry.
+     */
+    suspend fun resetUserPasswordByAdmin(
+        adminUserId: Long,
+        targetUserId: Long,
+        newPassword: String,
+        reasonOrNote: String
+    ): Result<UserEntity> = runCatching {
+        val admin = requireSuperadmin(adminUserId, "RESET_USER_PASSWORD_BY_ADMIN", "User", targetUserId.toString())
+        val targetUser = dao.getUserById(targetUserId)
+            ?: throw IllegalArgumentException("User #$targetUserId not found.")
+        val cleanPwd = newPassword.trim()
+        require(cleanPwd.length >= 6) {
+            "New password must be at least 6 characters long."
+        }
+
+        val newSalt = SecurityVault.generateSalt()
+        val newHash = SecurityVault.hashPassword(cleanPwd, newSalt)
+        val updated = targetUser.copy(
+            passwordSalt = newSalt,
+            passwordHash = newHash
+        )
+        dao.updateUser(updated)
+        dao.clearSessionsForUser(targetUserId)
+
+        recordAudit(
+            admin = admin,
+            action = "ADMIN_USER_PASSWORD_RESET",
+            entityAffected = "User",
+            entityId = "user:$targetUserId (${targetUser.email})",
+            previousValue = "passwordHash=<redacted>, activeSessions=cleared",
+            newValue = "passwordHash=<updated sha256>, temporaryPasswordSet=true",
+            reasonOrNote = reasonOrNote.ifBlank { "Password reset by Superadmin for ${targetUser.email}" }
+        )
+        updated
+    }
 }
